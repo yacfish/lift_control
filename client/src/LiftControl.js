@@ -14,6 +14,10 @@ function LiftControl({ setIsAuthenticated }) {
   const [error, setError] = useState('');
   const containerRef = useRef(null);
   const animationRef = useRef(null);
+  const showSettingsRef = useRef(null);
+  const showHomeRef = useRef(null);
+  const showSettingsButtonRef = useRef(null);
+  const showHomeButtonRef = useRef(null);
 
   const sendHeartbeat = useCallback(async () => {
     try {
@@ -45,7 +49,7 @@ function LiftControl({ setIsAuthenticated }) {
     };
 
     fetchStatus();
-    const statusInterval = setInterval(fetchStatus, 1000);
+    const statusInterval = setInterval(fetchStatus, 500);
     const heartbeatInterval = setInterval(sendHeartbeat, 1000);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -105,40 +109,44 @@ function LiftControl({ setIsAuthenticated }) {
       console.error('Error controlling lift:', error);
     }
   };
-  const Settings = ()=> (
-    <div className="toggle-container">
-      <div className="toggle-wrapper">
-        <label className="toggle">
-          <span className="label" style={status.up?
-            {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-            {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-            >UP</span>
-          <input
-            type="checkbox"
-            checked={status.up}
-            onChange={() => handleToggle('up')}
-            disabled={status.down}
-          />
-          <span className="slider"></span>
-        </label>
-      </div>
-      <div className="toggle-wrapper">
-        <label className="toggle">
-          <span className="label" style={status.down?
-            {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-            {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-            >DOWN</span>
-          <input
-            type="checkbox"
-            checked={status.down}
-            onChange={() => handleToggle('down')}
-            disabled={status.up}
-          />
-          <span className="slider"></span>
-        </label>
-      </div>
-    </div>
-  )
+  // class Settings extends React.Component{
+  //   render(){
+  //     return(
+  //     <div className="toggle-container">
+  //       <div className="toggle-wrapper">
+  //         <label className="toggle">
+  //           <span className="label" style={status.up?
+  //             {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+  //             {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+  //             >UP</span>
+  //           <input
+  //             type="checkbox"
+  //             checked={status.up}
+  //             onChange={() => handleToggle('up')}
+  //             disabled={status.down}
+  //           />
+  //           <span className="slider"></span>
+  //         </label>
+  //       </div>
+  //       <div className="toggle-wrapper">
+  //         <label className="toggle">
+  //           <span className="label" style={status.down?
+  //             {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+  //             {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+  //             >DOWN</span>
+  //           <input
+  //             type="checkbox"
+  //             checked={status.down}
+  //             onChange={() => handleToggle('down')}
+  //             disabled={status.up}
+  //           />
+  //           <span className="slider"></span>
+  //         </label>
+  //       </div>
+  //     </div>
+  //     )
+  //   }
+  // }
   const Home = ()=> (
     <div>
     </div>
@@ -154,10 +162,34 @@ function LiftControl({ setIsAuthenticated }) {
   const goHome = ()=>{
     console.log('goHome')
     setMode('home')
+    if (showSettingsRef.current) {
+      showSettingsRef.current.style.display = 'none';
+    }
+    if (showHomeRef.current) {
+      showHomeRef.current.style.display = 'flex';
+    }
+    if (showSettingsButtonRef.current) {
+      showSettingsButtonRef.current.style.display = 'flex';
+    }
+    if (showHomeButtonRef.current) {
+      showHomeButtonRef.current.style.display = 'none';
+    }
   }
   const goSettings = ()=>{
     console.log('goSettings')
     setMode('settings')
+    if (showSettingsRef.current) {
+      showSettingsRef.current.style.display = 'flex';
+    }
+    if (showHomeRef.current) {
+      showHomeRef.current.style.display = 'none';
+    }
+    if (showSettingsButtonRef.current) {
+      showSettingsButtonRef.current.style.display = 'none';
+    }
+    if (showHomeButtonRef.current) {
+      showHomeButtonRef.current.style.display = 'flex';
+    }
   }
   
   return (
@@ -167,12 +199,45 @@ function LiftControl({ setIsAuthenticated }) {
         <button className="logout-btn" onClick={handleLogout}>Logout</button>
       </div>
       {error && <p className="error">{error}</p>}
-      {mode==='settings' && <Settings/>}
-      {mode==='home' && <Home/>}
-      <div className='home-wrapper'>
-        <button className='home-btn' onClick={mode==='settings'?goHome:goSettings}>
-        {mode==='settings' &&<HomeImg/>}
-        {mode==='home' &&<SettingsImg/>}
+      <div className="toggle-container" ref={showSettingsRef}>
+        <div className="toggle-wrapper">
+          <label className="toggle">
+            <span className="label" style={status.up?
+              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+              >UP</span>
+            <input
+              type="checkbox"
+              checked={status.up}
+              onChange={() => handleToggle('up')}
+              disabled={status.down}
+            />
+            <span className="slider"></span>
+          </label>
+        </div>
+        <div className="toggle-wrapper">
+          <label className="toggle">
+            <span className="label" style={status.down?
+              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+              >DOWN</span>
+            <input
+              type="checkbox"
+              checked={status.down}
+              onChange={() => handleToggle('down')}
+              disabled={status.up}
+            />
+            <span className="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div className="home-container" ref={showHomeRef}><h1>home</h1></div>
+      <div className='nav-wrapper'>
+        <button className='home-btn' onClick={goHome} ref={showHomeButtonRef}>
+          <HomeImg/>
+        </button>
+        <button className='settings-btn' onClick={goSettings} ref={showSettingsButtonRef}>
+          <SettingsImg/>
         </button>
       </div>
     </div>
