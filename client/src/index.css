@@ -1,0 +1,15 @@
+body {
+  display: block;
+  margin: 0px;
+}
+@font-face {
+  font-family: '2Dumb';
+  font-style: normal;
+  src: local('2Dumb'), url(./fonts/2Dumb.ttf) format('truetype');
+}
+
+@font-face {
+  font-family: '3Dumb';
+  font-style: normal;
+  src: local('3Dumb'), url(./fonts/3Dumb.ttf) format('truetype');
+}

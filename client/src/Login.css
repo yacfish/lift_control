@@ -1,0 +1,52 @@
+.login-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100dvh;
+  background-color: #c0c0c0;
+}
+
+h2 {
+  font-family: '3Dumb', Arial, serif;
+  font-size: 2rem;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  font-family: '2Dumb', Arial, serif;
+}
+
+input {
+  margin: 10px 0;
+  padding: 10px;
+  font-size: 16px;
+  font-family: '2Dumb', Arial, serif;
+}
+
+button {
+  margin-top: 20px;
+  padding: 10px;
+  font-size: 16px;
+  font-family: '2Dumb', Arial, serif;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+
+button:disabled {
+  background-color: #cccccc;
+  cursor: not-allowed;
+}
+
+.error {
+  color: red;
+  margin-top: 10px;
+}
