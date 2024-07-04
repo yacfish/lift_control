@@ -10,6 +10,7 @@ let positionBgY = 0;
 
 function LiftControl({ setIsAuthenticated }) {
   const [status, setStatus] = useState({ up: false, down: false });
+  const [mode, setMode] = useState('home');
   const [error, setError] = useState('');
   const containerRef = useRef(null);
   const animationRef = useRef(null);
@@ -44,7 +45,7 @@ function LiftControl({ setIsAuthenticated }) {
     };
 
     fetchStatus();
-    const statusInterval = setInterval(fetchStatus, 500);
+    const statusInterval = setInterval(fetchStatus, 1000);
     const heartbeatInterval = setInterval(sendHeartbeat, 1000);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -104,7 +105,44 @@ function LiftControl({ setIsAuthenticated }) {
       console.error('Error controlling lift:', error);
     }
   };
-
+  const Settings = ()=> (
+    <div className="toggle-container">
+      <div className="toggle-wrapper">
+        <label className="toggle">
+          <span className="label" style={status.up?
+            {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+            {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+            >UP</span>
+          <input
+            type="checkbox"
+            checked={status.up}
+            onChange={() => handleToggle('up')}
+            disabled={status.down}
+          />
+          <span className="slider"></span>
+        </label>
+      </div>
+      <div className="toggle-wrapper">
+        <label className="toggle">
+          <span className="label" style={status.down?
+            {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
+            {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
+            >DOWN</span>
+          <input
+            type="checkbox"
+            checked={status.down}
+            onChange={() => handleToggle('down')}
+            disabled={status.up}
+          />
+          <span className="slider"></span>
+        </label>
+      </div>
+    </div>
+  )
+  const Home = ()=> (
+    <div>
+    </div>
+  )
   const handleLogout = async () => {
     try {
       await api.post('/logout');
@@ -113,7 +151,15 @@ function LiftControl({ setIsAuthenticated }) {
       console.error('Error logging out:', error);
     }
   };
-  const goHome = ()=>{console.log('goHome')}
+  const goHome = ()=>{
+    console.log('goHome')
+    setMode('home')
+  }
+  const goSettings = ()=>{
+    console.log('goSettings')
+    setMode('settings')
+  }
+  
   return (
     <div className="lift-control" ref={containerRef}>
       <div className="menu-bar">
@@ -121,41 +167,14 @@ function LiftControl({ setIsAuthenticated }) {
         <button className="logout-btn" onClick={handleLogout}>Logout</button>
       </div>
       {error && <p className="error">{error}</p>}
-      <div className="toggle-container">
-        <div className="toggle-wrapper">
-          <label className="toggle">
-            <span className="label" style={status.up?
-              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-              >UP</span>
-            <input
-              type="checkbox"
-              checked={status.up}
-              onChange={() => handleToggle('up')}
-              disabled={status.down}
-            />
-            <span className="slider"></span>
-          </label>
-        </div>
-        <div className="toggle-wrapper">
-          <label className="toggle">
-            <span className="label" style={status.down?
-              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-              >DOWN</span>
-            <input
-              type="checkbox"
-              checked={status.down}
-              onChange={() => handleToggle('down')}
-              disabled={status.up}
-            />
-            <span className="slider"></span>
-          </label>
-        </div>
+      {mode==='settings' && <Settings/>}
+      {mode==='home' && <Home/>}
+      <div className='home-wrapper'>
+        <button className='home-btn' onClick={mode==='settings'?goHome:goSettings}>
+        {mode==='settings' &&<HomeImg/>}
+        {mode==='home' &&<SettingsImg/>}
+        </button>
       </div>
-      {/* <button className='home-btn' onClick={goHome}>
-        <HomeImg/>
-      </button> */}
     </div>
   );
 }
