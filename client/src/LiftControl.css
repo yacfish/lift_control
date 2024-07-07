@@ -20,7 +20,7 @@
   width: 100%;
   box-sizing: border-box;
   font-family: '2Dumb', Arial, serif;
-  margin-bottom: 50px;
+  margin-bottom: 0px;
 }
 
 .menu-bar h1 {
@@ -31,11 +31,11 @@
 
 .logout-btn {
   margin-top: 0px;
-  padding: 10px 20px;
-  background-color: #ff4d4d;
+  padding: 10px 15px;
+  background-color: #007bff77;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 1em;
   cursor: pointer;
   font-size: 16px;
   font-family: '2Dumb', Arial, serif;
@@ -133,39 +133,72 @@ input:disabled + .slider {
 
 .error {
   color: red;
-  margin: 10px 0;
-  text-align: center;
+  margin-top: 10px;
+  position: absolute;
+  top: 80px;
+  left: 5%;
 }
 .home-wrapper {
   margin-top: auto;
 }
+.nav-wrapper {
+  margin: 0 15px 15px 15px;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+}
+.stop-btn {
+  background-color: #fff0;
+  display: flex;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+.stop-btn:hover {
+  background-color: #fff0;
+}
 .home-btn {
-  background-color: #ff4d4d88;
+  background-color: #6666;
   display: none;
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  margin-left: auto;
-  margin-right: 20px;
-  margin-top: 0;
-  margin-bottom: 20px;
+  margin: 0;
 }
 .home-btn:hover {
-  background-color: #ff4d4d88;
+  background-color: #6666;
 }
 .settings-btn {
-  background-color: #ff4d4d88;
-  display: grid;
+  background-color: #6666;
+  display: flex;
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  margin-left: auto;
-  margin-right: 20px;
-  margin-top: 0;
-  margin-bottom: 20px;
+  margin: 0;
 }
+
 .settings-btn:hover {
-  background-color: #ff4d4d88;
+  background-color: #6666;
+}
+
+.level-radio{
+  border-radius: 50%;
+  margin: 0;
+  width: 1em;
+  height: 1em;
+  color: transparent;
+  font-size: 1rem;
+  border: 2.5em solid #bababa;
+  background-color: #888888;
+}
+.level-label {
+  margin-left: 10px;
+  font-size: 3rem;
+  font-weight: 700;
+  font-family: '3Dumb', Arial, serif;
+  /* text-shadow: rgb(0 108 255) 0px 0px 10px; */
 }
 @media (max-height: 500px) {
 

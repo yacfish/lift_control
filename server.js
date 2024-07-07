@@ -184,6 +184,16 @@ app.get('/status', verifyToken, (req, res) => {
     res.status(500).json({ error: 'Error reading lift status' });
   }
 });
+    
+app.post('/floor', verifyToken, (req,res) => {
+  console.log('[floor]',req.body)
+})
+
+app.post('/stop', verifyToken, (req,res) => {
+  console.log('[STOP]')
+  relayUp.writeSync(0);
+  relayDown.writeSync(0);
+})
 
 app.post('/control', verifyToken, (req, res) => {
   const { direction, state } = req.body;
