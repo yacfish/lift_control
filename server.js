@@ -1,8 +1,9 @@
 const express = require('express');
-// const Gpio = require('onoff').Gpio;
-class Gpio {
-  constructor(id,type){
-    this.id = id
+const { execSync } = require('child_process');
+class GpioRelayGroup {
+  constructor(id0,id1,type){
+    this.id0 = id0
+    this.id1 = id1
     this.type = type
     this.state = 0
   }
@@ -12,7 +13,9 @@ class Gpio {
   writeSync (state){
     if (this.state !== state){
       this.state = state
-      console.log(`GPIO #${this.id} > ${this.state}`)
+      console.log(`GPIOs #${this.id0}/#${this.id1} > ${this.state}`)
+      execSync('gpioset 0 '+this.id0+'='+this.state)// ignoring output, no need to print an empty Buffer
+      execSync('gpioset 0 '+this.id1+'='+this.state)
     }
   }
 }
@@ -56,8 +59,8 @@ const user = {
 // Set up GPIO pins for relays (adjust pin numbers as needed)
 let relayUp, relayDown;
 try {
-  relayUp = new Gpio(17, 'out');
-  relayDown = new Gpio(18, 'out');
+  relayDown = new GpioRelayGroup(12, 16, 'out');
+  relayUp = new GpioRelayGroup(23, 24, 'out');
 } catch (error) {
   console.error('Error initializing GPIO:', error);
   process.exit(1);
@@ -233,8 +236,8 @@ https.createServer(options, app).listen(PORT, () => {
 process.on('SIGINT', () => {
   try {
     turnOffRelays();
-    relayUp.unexport();
-    relayDown.unexport();
+    // relayUp.unexport();
+    // relayDown.unexport();
   } catch (error) {
     console.error('Error during shutdown:', error);
   }
