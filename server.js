@@ -1,4 +1,5 @@
-const express = require('express');
+const express = require('express')
+const serial = require('serialport')
 // const Gpio = require('onoff').Gpio;
 class Gpio {
   constructor(id,type){
@@ -187,12 +188,14 @@ app.get('/status', verifyToken, (req, res) => {
     
 app.post('/floor', verifyToken, (req,res) => {
   console.log('[floor]',req.body)
+  res.json({})
 })
 
 app.post('/stop', verifyToken, (req,res) => {
   console.log('[STOP]')
   relayUp.writeSync(0);
   relayDown.writeSync(0);
+  res.json({})
 })
 
 app.post('/control', verifyToken, (req, res) => {

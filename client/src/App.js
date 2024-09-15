@@ -4,7 +4,7 @@ import LiftControl from './LiftControl';
 import Login from './Login';
 import './App.css';
 
-export const api = axios.create({
+/* export  */const api = axios.create({
   withCredentials: true
 });
 api.interceptors.response.use(

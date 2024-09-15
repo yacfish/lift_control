@@ -5,7 +5,50 @@ import {ReactComponent as StopImg} from './images/stop.svg';
 import {ReactComponent as HomeImg} from './images/home.svg';
 import {ReactComponent as SettingsImg} from './images/settings.svg';
 
-import {api} from './App';
+// import {api} from './App';
+import axios from 'axios';
+const api_sys = axios.create({
+  withCredentials: true
+});
+const api_ctl = axios.create({
+  withCredentials: true
+});
+api_sys.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if ((error.response.status === 403) && !originalRequest._retry) {
+      originalRequest._retry = true;
+      try {
+        await api_sys.post('/refresh-token');
+        return api_sys(originalRequest);
+      } catch (refreshError) {
+        // Refresh token has failed, redirect to login
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+api_ctl.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if ((error.response.status === 403) && !originalRequest._retry) {
+      originalRequest._retry = true;
+      try {
+        await api_ctl.post('/refresh-token');
+        return api_ctl(originalRequest);
+      } catch (refreshError) {
+        // Refresh token has failed, redirect to login
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 let positionBgY = 0;
 
@@ -36,7 +79,7 @@ function LiftControl({ setIsAuthenticated }) {
 
   const sendHeartbeat = useCallback(async () => {
     try {
-      await api.post('/heartbeat');
+      await api_sys.post('/heartbeat');
     } catch (error) {
       console.error('Error sending heartbeat:', error);
     }
@@ -45,7 +88,7 @@ function LiftControl({ setIsAuthenticated }) {
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const response = await api.get('/status');
+        const response = await api_ctl.get('/status');
         // console.log('STATUS response.data', response.data)
         const moving = response.data.up || response.data.down
         const direction = response.data.up? 'up':'down'
@@ -112,7 +155,7 @@ function LiftControl({ setIsAuthenticated }) {
   const handleToggle = async (direction) => {
     try {
       const newState = !status[direction];
-      await api.post('/control', { direction, state: newState });
+      await api_ctl.post('/control', { direction, state: newState });
       setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
       setError('');
       console.log('newState',newState,'— direction', direction)
@@ -127,7 +170,7 @@ function LiftControl({ setIsAuthenticated }) {
   
   const handleLogout = async () => {
     try {
-      await api.post('/logout');
+      await api_sys.post('/logout');
       setIsAuthenticated(false);
     } catch (error) {
       console.error('Error logging out:', error);
@@ -182,7 +225,7 @@ function LiftControl({ setIsAuthenticated }) {
     }
     if (requestedFloor==='-')return
     console.log('floor', requestedFloor)
-    api.post('/floor', { floor: requestedFloor });
+    api_ctl.post('/floor', { floor: requestedFloor });
   }
   const goToFloor2 = () => {
     goToFloor('2')
@@ -198,7 +241,7 @@ function LiftControl({ setIsAuthenticated }) {
   }
   const stopLift = () => {
     console.log('STOP')
-    api.post('/stop', {});
+    api_ctl.post('/stop', {});
     goToFloor('-')
   }
   return (
@@ -243,10 +286,10 @@ function LiftControl({ setIsAuthenticated }) {
       <div className="home-container" ref={showHomeRef}>
         
         <table className='level-selector'>
-          <tr className='level-wrapper'><td><input type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2}/></td><td><label className='level-label' ref={labelFloorB}>2</label></td></tr>
-          <tr className='level-wrapper'><td><input type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1}/></td><td><label className='level-label' ref={labelFloorB}>1</label></td></tr>
-          <tr className='level-wrapper'><td><input type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG}/></td><td><label className='level-label' ref={labelFloorB}>G</label></td></tr>
-          <tr className='level-wrapper'><td><input type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB}/></td><td><label className='level-label' ref={labelFloorB}>B</label></td></tr>
+          <tr className='level-wrapper'><td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvl2'>2</label></td></tr>
+          <tr className='level-wrapper'><td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvl1'>1</label></td></tr>
+          <tr className='level-wrapper'><td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvlG'>G</label></td></tr>
+          <tr className='level-wrapper'><td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvlB'>B</label></td></tr>
         </table>
       </div>
       <div className='nav-wrapper'>
