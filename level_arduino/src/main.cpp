@@ -5,7 +5,7 @@ const String client_id = "2"; // 'B' or 'G' or '1' or '2'
 
 //inputs
 DigitalInput door_sensor(2,true,true); // end switch
-DigitalInput lift_sensor(3,true,true); // digital IR sensor
+DigitalInput lift_sensor(3,false,true); // digital IR sensor
 DigitalInput call_button(4,true,true); // end switch
 
 //outputs

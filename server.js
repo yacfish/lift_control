@@ -1,6 +1,11 @@
 const express = require('express')
-const serial = require('serialport')
+const { SerialPort }  = require('serialport')
+const { ReadlineParser } = require('@serialport/parser-readline')
 // const Gpio = require('onoff').Gpio;
+// const ports = {}
+const port = new SerialPort({ path: '/dev/cu.usbserial-40', baudRate: 57600})
+const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }))
+parser.on('data', console.log)
 class Gpio {
   constructor(id,type){
     this.id = id
