@@ -17,7 +17,7 @@ bool door_locked = false;
 bool door_lock_requested = false;
 bool lift_present = false;
 bool call_button_pressed = false;
-
+bool calibrartion_status = false;
 ////////////////////////////////////////////////////////////////////
 // CUSTOM FUNCTIONS
 
@@ -78,8 +78,10 @@ void loop() {
 
   if (Serial.available() > 0) {
     String cmd_str = read_string_from_server();
-    if (cmd_str=="-"){unlock_door();}
-    else if (cmd_str=="+"){lock_door_request();}
+    if (cmd_str=="UNLOCK_DOOR"){unlock_door();}
+    else if (cmd_str=="LOCK_DOOR_REQUEST"){lock_door_request();}
+    else if (cmd_str=="SUCCESSFULL_CALIBRATION") calibrartion_status = true;
+    else if (cmd_str=="LOST_CALIBRATION") calibrartion_status = false;
   }
 
   byte ds = door_sensor.readDebounced();

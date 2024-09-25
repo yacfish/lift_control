@@ -5,7 +5,33 @@ const { ReadlineParser } = require('@serialport/parser-readline')
 // const ports = {}
 const port = new SerialPort({ path: '/dev/cu.usbserial-40', baudRate: 57600})
 const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }))
-parser.on('data', console.log)
+port.on("open", () => {
+  console.log("PORT OPEN", port.settings.path)
+  console.log(port.settings)
+  console.log("port.isOpen",port.isOpen)
+
+})
+parser.on('data', data => {
+  console.log(data)
+})
+port.on("close",error => {
+  if (error.disconnected) {
+    console.log("DISCONNECTED FROM PORT", port.settings.path)
+    connect_loop()
+  }
+})
+port.on("error",error => {
+  if (error.message.includes("Error: No such file or directory, cannot open ")){
+    console.log("CANNOT OPEN PORT",port.settings.path)
+    connect_loop()
+  }
+})
+const connect_loop=async()=>{
+  console.log("TRYING TO CONNECT",port.settings.path)
+  await new Promise(r => setTimeout(r, 1000));
+  port.open()
+  
+} 
 class Gpio {
   constructor(id,type){
     this.id = id
