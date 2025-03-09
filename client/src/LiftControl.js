@@ -53,7 +53,7 @@ api_ctl.interceptors.response.use(
 let positionBgY = 0;
 
 function LiftControl({ setIsAuthenticated }) {
-  const [status, setStatus] = useState({ up: false, down: false });
+  const [status, setStatus] = useState({ up: false, down: false, currentLevels: {} }); // Updated status state to use currentLevels (plural)
   const [mode, setMode] = useState('home');
   const [error, setError] = useState('');
   const containerRef = useRef(null);
@@ -62,20 +62,20 @@ function LiftControl({ setIsAuthenticated }) {
   const showHomeRef = useRef(null);
   const showSettingsButtonRef = useRef(null);
   const showHomeButtonRef = useRef(null);
-  const btnFloor2 = useRef(null)
-  const btnFloor1 = useRef(null)
-  const btnFloorG = useRef(null)
-  const btnFloorB = useRef(null)
-  const labelFloor2 = useRef(null)
-  const labelFloor1 = useRef(null)
-  const labelFloorG = useRef(null)
-  const labelFloorB = useRef(null)
+  const btnFloor2 = useRef(null);
+  const btnFloor1 = useRef(null);
+  const btnFloorG = useRef(null);
+  const btnFloorB = useRef(null);
+  const labelFloor2 = useRef(null);
+  const labelFloor1 = useRef(null);
+  const labelFloorG = useRef(null);
+  const labelFloorB = useRef(null);
   const floorMap = {
-    '2':[btnFloor2,labelFloor2],
-    '1':[btnFloor1,labelFloor1],
-    'G':[btnFloorG,labelFloorG],
-    'B':[btnFloorB,labelFloorB],
-  }
+    '2': [btnFloor2, labelFloor2],
+    '1': [btnFloor1, labelFloor1],
+    'G': [btnFloorG, labelFloorG],
+    'B': [btnFloorB, labelFloorB],
+  };
 
   const sendHeartbeat = useCallback(async () => {
     try {
@@ -87,22 +87,23 @@ function LiftControl({ setIsAuthenticated }) {
 
   useEffect(() => {
     const fetchStatus = async () => {
+      console.log('fetchStatus called'); // Log when fetchStatus is called
       try {
         const response = await api_ctl.get('/status');
-        // console.log('STATUS response.data', response.data)
-        const moving = response.data.up || response.data.down
-        const direction = response.data.up? 'up':'down'
+        console.log('fetchStatus response:', response); // Log the response
+        const moving = response.data.up || response.data.down;
+        const direction = response.data.up ? 'up' : 'down';
         if (moving) {
           stopAnimation();
           animateBackground(direction);
         } else {
           stopAnimation();
         }
-        setStatus(response.data);
+        setStatus(response.data); // Update status with all data (now includes currentLevels)
         setError('');
       } catch (error) {
+        console.error('fetchStatus error:', error); // Log the error
         setError('Error fetching lift status. Please try again.');
-        console.error('Error fetching status:', error);
       }
     };
 
@@ -286,23 +287,41 @@ function LiftControl({ setIsAuthenticated }) {
       <div className="home-container" ref={showHomeRef}>
         
         <table className='level-selector'>
-          <tr className='level-wrapper'><td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvl2'>2</label></td></tr>
-          <tr className='level-wrapper'><td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvl1'>1</label></td></tr>
-          <tr className='level-wrapper'><td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvlG'>G</label></td></tr>
-          <tr className='level-wrapper'><td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB}/></td><td><label className='level-label' ref={labelFloorB} htmlFor='lvlB'>B</label></td></tr>
+          <tr className='level-wrapper'>
+            <td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2} /></td>
+            <td><label className='level-label' ref={labelFloor2} htmlFor='lvl2' style={status.currentLevels['2'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>2</label></td>
+          </tr>
+          <tr className='level-wrapper'>
+            <td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1} /></td>
+            <td><label className='level-label' ref={labelFloor1} htmlFor='lvl1' style={status.currentLevels['1'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>1</label></td>
+          </tr>
+          <tr className='level-wrapper'>
+            <td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG} /></td>
+            <td><label className='level-label' ref={labelFloorG} htmlFor='lvlG' style={status.currentLevels['G'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>G</label></td>
+          </tr>
+          <tr className='level-wrapper'>
+            <td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB} /></td>
+            <td><label className='level-label' ref={labelFloorB} htmlFor='lvlB' style={status.currentLevels['B'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>B</label></td>
+          </tr>
         </table>
       </div>
       <div className='nav-wrapper'>
-      <button className='stop-btn' onClick={stopLift}>
-          <StopImg/>
+        <button className='stop-btn' onClick={stopLift}>
+          <StopImg />
         </button>
         <button className='home-btn' onClick={navHome} ref={showHomeButtonRef}>
-          <HomeImg/>
+          <HomeImg />
         </button>
         <button className='settings-btn' onClick={navSettings} ref={showSettingsButtonRef}>
-          <SettingsImg/>
+          <SettingsImg />
         </button>
       </div>
+      {/* {status.currentLevel && ( // Display current level for debugging */}
+      {status.currentLevels && ( // Display current levels for debugging
+        <div className="current-level">
+          Current Levels: {JSON.stringify(status.currentLevels)}
+        </div>
+      )}
     </div>
   );
 }
