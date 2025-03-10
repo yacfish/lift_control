@@ -6,8 +6,10 @@ const path = require('path');
 
 // Virtual lift state variables
 let virtualLiftPosition = 0; // Initial position at G level
-let virtualLiftTargetLevel = 'G'; // Initial target level
-let virtualLiftMovingDirection = null; // Not moving initially
+let targetLevel = 'G'; // Initial target level
+let virtualLiftMoveInterval; // Variable to hold the interval
+let mockLiftMode = false; // Mock lift mode variable, false by default
+let mockGeneratorCount = 0; // Counter for mock generator calls
 const levelHeight = 3; // Height of each level in meters
 const levelPositions = { // Level positions in meters
   'B': -3,
@@ -24,10 +26,10 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 
 class GpioRelayGroup {
-  constructor(id0, id1, type) {
+  constructor(id0, id1, label) {
     this.id0 = id0;
     this.id1 = id1;
-    this.type = type;
+    this.label = label;
     this.state = 0;
   }
   readSync() {
@@ -36,9 +38,11 @@ class GpioRelayGroup {
   writeSync(state) {
     if (this.state !== state) {
       this.state = state;
-      console.log(`GPIOs #${this.id0}/#${this.id1} > ${this.state}`);
-      execSync('gpioset 0 ' + this.id0 + '=' + this.state); // ignoring output, no need to print an empty Buffer
-      execSync('gpioset 0 ' + this.id1 + '=' + this.state);
+      console.log(`GPIOs #${this.id0} and #${this.id1} ('${this.label}') set to ${this.state? 'ON' : 'OFF'}${mockLiftMode? ' (Virtual)' : ''}`);
+      if (!mockLiftMode){
+        execSync('gpioset 0 ' + this.id0 + '=' + this.state); // ignoring output, no need to print an empty Buffer
+        execSync('gpioset 0 ' + this.id1 + '=' + this.state);
+      }
     }
   }
 }
@@ -52,14 +56,14 @@ const portPaths = [
   '/dev/cu.usbserial-42',
   '/dev/cu.usbserial-43',
 ];
+const listOfLevels = ['B', 'G', '1', '2']
 
 // Object to store current levels for each floor
-const currentLevels = {
-  'B': null,
-  'G': null,
-  '1': null,
-  '2': null,
-};
+const currentLevels = {};
+listOfLevels.forEach(level=>{currentLevels[level]=null})
+    
+let currentLevel = 'none'
+
 
 // Function to parse serial data and determine the level
 function parseLevelData(data, clientId) { // Added clientId parameter
@@ -67,37 +71,35 @@ function parseLevelData(data, clientId) { // Added clientId parameter
   if (parts.length === 2) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
+      currentLevel=clientId
       currentLevels[clientId] = 'LIFT HERE';
+      if (targetLevel === currentLevel) {
+        console.log(`PRESENCE SENSOR TRIGGERED" Lift reached target level: ${targetLevel}`);
+        relayUp.writeSync(0);
+        relayDown.writeSync(0);
+        clearInterval(virtualLiftMoveInterval);
+        virtualLiftMoveInterval = null;
+        virtualLiftMovingDirection = null;
+        targetLevel = null;
+      }
     } else if (message === 'LIFT AWAY') {
       currentLevels[clientId] = 'LIFT AWAY';
     }
   }
+  
 }
 
 function createMockSerialDataGenerator(clientId) { // Removed initialLevel parameter
   console.log(`Creating mock data generator for ${clientId}`); // Log mock data generator creation
 
-  updateMockLevelData(); // Call updateMockLevelData to set initial level based on virtualLiftPosition
-  console.log(`Mock data generator for ${clientId} initialized to: ${clientId} : ${currentLevels[clientId]}`); // Log initial level
-}
-
-function updateMockLevelData() {
-  const tolerance = positionTolerance;
-  for (const level in levelPositions) {
-    const levelPosition = levelPositions[level];
-    const positionDiff = Math.abs(virtualLiftPosition - levelPosition);
-    if (positionDiff <= tolerance) {
-      currentLevels[level] = 'LIFT HERE';
-    } else {
-      currentLevels[level] = 'LIFT AWAY';
-    }
-    // Send mock serial data update (important to keep this for mock data to be sent)
-    const clientId = level; // ClientId is the floor level in this context
-    const levelStatus = currentLevels[level];
-    const mockData = `${clientId} : ${levelStatus}`;
-    console.log(`Mock data update: ${mockData}`);
-    parseLevelData(mockData, clientId);
+  mockGeneratorCount++; // Increment mock generator call count
+  if (mockGeneratorCount >= 4) {
+    mockLiftMode = true;
+    console.error('Mock Lift Mode Activated');
   }
+
+  updateMockLevelData(); // Call updateMockLevelData to set initial level based on virtualLiftPosition
+  // console.log(`Mock data generator for ${clientId} initialized to: ${clientId} : ${currentLevels[clientId]}`); // Log initial level
 }
 
 function updateMockLevelData() {
@@ -106,17 +108,25 @@ function updateMockLevelData() {
     const levelPosition = levelPositions[level];
     const positionDiff = Math.abs(virtualLiftPosition - levelPosition);
     if (positionDiff <= tolerance) {
+      currentLevel=level
       currentLevels[level] = 'LIFT HERE';
     } else {
       currentLevels[level] = 'LIFT AWAY';
     }
+    
+    // Send mock serial data update (important to keep this for mock data to be sent)
+   
+    const levelStatus = (currentLevel===level)? 'LIFT HERE' : 'LIFT AWAY';
+    const mockData = `${level} : ${levelStatus}`;
+    // console.log(`Mock data update: ${mockData}`);
+    parseLevelData(mockData, level);
   }
 }
 
 
 // Initialize serial ports and parsers
 portPaths.forEach((path, index) => {
-  const clientId = ['B', 'G', '1', '2'][index];
+  const clientId = listOfLevels[index];
   console.log(`Attempting to initialize serial port: ${path}`); // Log before SerialPort
 
   const port = new SerialPort({ path: path, baudRate: 57600 });
@@ -146,12 +156,6 @@ portPaths.forEach((path, index) => {
 });
 
 
-function createMockSerialDataGenerator(clientId) { // Removed initialLevel parameter, removed setInterval
-  console.log(`Creating mock data generator for ${clientId}`); // Log mock data generator creation
-
-  updateMockLevelData(); // Call updateMockLevelData to set initial level based on virtualLiftPosition
-  console.log(`Mock data generator for ${clientId} initialized to: ${clientId} : ${currentLevels[clientId]}`); // Log initial level
-}
 
 const app = express();
 
@@ -185,9 +189,11 @@ const user = {
 // Set up GPIO pins for relays (adjust pin numbers as needed)
 let relayUp, relayDown;
 try {
-  relayDown = new GpioRelayGroup(12, 16, 'out');
-  relayUp = new GpioRelayGroup(23, 24, 'out');
+  relayDown = new GpioRelayGroup(12, 16, 'DOWN');
+  relayUp = new GpioRelayGroup(23, 24, 'UP');
 } catch (error) {
+  relayDown = false;
+  relayUp = false;
   console.error('Error initializing GPIO:', error);
   process.exit(1);
 }
@@ -277,20 +283,66 @@ app.post('/refresh-token', (req, res) => {
 
 app.get('/status', verifyToken, (req, res) => {
   try {
-    res.json({
+    const currentLevelsDisplay = {}
+    listOfLevels.forEach(level=>{currentLevelsDisplay[level]=(level==currentLevel)? 'LIFT HERE' : 'LIFT AWAY'})
+    let resObj = {
       up: relayUp.readSync(),
       down: relayDown.readSync(),
-      currentLevels: currentLevels, // Updated to return currentLevels object
-    });
+      currentLevels: currentLevelsDisplay, // Updated to return currentLevels object
+    }
+    res.json(resObj);
+    // if (resObj.up || resObj.down) console.error('resObj : ', resObj);
   } catch (error) {
     console.error('Error reading GPIO status:', error);
     res.status(500).json({ error: 'Error reading lift status' });
   }
 });
 
+function mockLiftUpdate(state, direction){
+  if (state) {
+    if (!virtualLiftMoveInterval) { // Prevent multiple intervals
+      virtualLiftMoveInterval = setInterval(() => {
+        const step = (direction === 1)? 0.1 : -0.1;
+        virtualLiftPosition += step;
+
+        // Basic boundary checks (can be refined)
+        virtualLiftPosition = Math.max(-3, Math.min(6, virtualLiftPosition)); // Limit to [-3, 6] range
+        console.log(`Virtual lift position updated: ${virtualLiftPosition}`);
+        updateMockLevelData(); // Update mock levels based on new position
+
+        
+      }, 200); // Interval for movement simulation (adjust as needed)
+    }
+  } else {
+    clearInterval(virtualLiftMoveInterval); // Clear interval if running
+    virtualLiftMoveInterval = null;
+    updateMockLevelData(); // Update mock levels when lift stops
+  }
+}
 app.post('/floor', verifyToken, (req, res) => {
-  console.log('[floor]',req.body)
-  res.json({})
+  console.log('[floor]',req.body);
+  const level = req.body.floor;
+  if (level && levelPositions.hasOwnProperty(level)) {
+    targetLevel = level;
+    console.log(`Lift target level updated to: ${targetLevel}`);
+    res.json({ message: `Target level set to ${level}` });
+    if(currentLevel!= targetLevel){
+      const heightDiff = levelPositions[targetLevel] - levelPositions[currentLevel];
+      const desiredDirection = heightDiff > 0 ? 1 : 0;
+      
+      if (mockLiftMode) {
+        // Control virtual lift (mock mode)
+        mockLiftUpdate(true, desiredDirection)
+        console.log(`Controlling virtual lift (mock mode): direction=${(desiredDirection? 'up' : 'down')}, state=${true}`);
+        
+      }
+      
+      relayUp.writeSync(desiredDirection);
+      relayDown.writeSync(1-desiredDirection);
+    } else targetLevel=null;
+  } else {
+    res.status(400).json({ error: 'Invalid level specified' });
+  }
 })
 
 app.post('/stop', verifyToken, (req, res) => {
@@ -305,52 +357,21 @@ app.post('/stop', verifyToken, (req, res) => {
   res.json({});
 });
 
-let virtualLiftMoveInterval; // Variable to hold the interval
-
 app.post('/control', verifyToken, (req, res) => {
   const { direction, state } = req.body;
-
+  console.log('/control req.body :\n',req.body);
   if (!direction || typeof state !== 'boolean') {
     return res.status(400).json({ error: 'Invalid request parameters' });
   }
-
-  if (ports.length === 0) {
-    // Control virtual lift if serial ports are not available (mock mode)
-    console.log(`Controlling virtual lift: direction=${direction}, state=${state}`);
-    if (state) {
-      virtualLiftMovingDirection = direction;
-      if (!virtualLiftMoveInterval) { // Prevent multiple intervals
-        virtualLiftMoveInterval = setInterval(() => {
-          const step = direction === 'up' ? 0.1 : -0.1; // 0.1m step per interval
-          virtualLiftPosition += step;
-
-          // Basic boundary checks (can be refined)
-          virtualLiftPosition = Math.max(-3, Math.min(6, virtualLiftPosition)); // Limit to [-3, 6] range
-          console.log(`Virtual lift position updated: ${virtualLiftPosition}`);
-          updateMockLevelData(); // Update mock levels based on new position
-
-          if (virtualLiftTargetLevel) { // Check if target level is set
-            const targetPosition = levelPositions[virtualLiftTargetLevel];
-            if (Math.abs(virtualLiftPosition - targetPosition) <= positionTolerance) {
-              clearInterval(virtualLiftMoveInterval);
-              virtualLiftMoveInterval = null;
-              virtualLiftMovingDirection = null;
-              console.log(`Virtual lift reached target level: ${virtualLiftTargetLevel}, position: ${virtualLiftPosition}`);
-              updateMockLevelData(); // Final level update when target reached
-            }
-          }
-        }, 200); // Interval for movement simulation (adjust as needed)
-      }
-    } else {
-      virtualLiftMovingDirection = null;
-      clearInterval(virtualLiftMoveInterval); // Clear interval if running
-      virtualLiftMoveInterval = null;
-      updateMockLevelData(); // Update mock levels when lift stops
-    }
-    return res.sendStatus(200);
+  if (mockLiftMode) {
+    // Control virtual lift (mock mode)
+    mockLiftUpdate(state, direction=== 'up'? 1 : 0)
+    console.log(`Controlling virtual lift (mock mode): direction=${direction}, state=${state}`);
+    
   }
 
-  // Control real relays if serial ports are available
+  // Control real relays weather serial ports are available or not
+  // this is necessary to update the relayUp and relayDown states
   try {
     if (direction === 'up') {
       relayUp.writeSync(state ? 1 : 0);
@@ -364,6 +385,7 @@ app.post('/control', verifyToken, (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
+    // console.error('Error controlling GPIO');
     console.error('Error controlling GPIO:', error);
     res.status(500).json({ error: 'Error controlling lift' });
   }
