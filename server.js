@@ -6,18 +6,18 @@ const path = require('path');
 
 // Virtual lift state variables
 let virtualLiftPosition = 0; // Initial position at G level
-let targetLevel = 'G'; // Initial target level
+let targetLevel = 'none'; // Initial target level
 let virtualLiftMoveInterval; // Variable to hold the interval
 let mockLiftMode = false; // Mock lift mode variable, false by default
 let mockGeneratorCount = 0; // Counter for mock generator calls
-const levelHeight = 3; // Height of each level in meters
+const mockObject = {}
 const levelPositions = { // Level positions in meters
   'B': -3,
   'G': 0,
   '1': 3,
   '2': 6,
 };
-const positionTolerance = 0.01; // 1cm tolerance for "LIFT HERE"
+const positionTolerance = 0.05; // 1cm tolerance for "LIFT HERE"
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const https = require('https');
@@ -63,7 +63,7 @@ const currentLevels = {};
 listOfLevels.forEach(level=>{currentLevels[level]=null})
     
 let currentLevel = 'none'
-
+let currentPosition = 'none'
 
 // Function to parse serial data and determine the level
 function parseLevelData(data, clientId) { // Added clientId parameter
@@ -71,19 +71,33 @@ function parseLevelData(data, clientId) { // Added clientId parameter
   if (parts.length === 2) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
-      currentLevel=clientId
+      currentLevel = clientId
+      currentPosition = clientId
       currentLevels[clientId] = 'LIFT HERE';
-      if (targetLevel === currentLevel) {
-        console.log(`PRESENCE SENSOR TRIGGERED" Lift reached target level: ${targetLevel}`);
+      if (targetLevel === currentLevel || currentLevel === 'B' || currentLevel === '2') {
+        console.log(`PRESENCE SENSOR TRIGGERED > Lift reached target level: ${targetLevel}`);
         relayUp.writeSync(0);
         relayDown.writeSync(0);
         clearInterval(virtualLiftMoveInterval);
         virtualLiftMoveInterval = null;
         virtualLiftMovingDirection = null;
         targetLevel = null;
+      } else {
+        console.log(`PRESENCE SENSOR TRIGGERED > Lift reached level: ${currentLevel}`);
       }
     } else if (message === 'LIFT AWAY') {
       currentLevels[clientId] = 'LIFT AWAY';
+      console.log(`PRESENCE SENSOR TRIGGERED > Lift left level ${clientId}`);
+      if (relayUp.readSync()) {
+        const nextLevelIdx = listOfLevels.indexOf(clientId) + 1
+        const nextLevel = listOfLevels[nextLevelIdx]
+        currentPosition = `${currentLevel} - ${nextLevel}`
+      }
+      else if (relayDown.readSync()) {
+        const nextLevelIdx = listOfLevels.indexOf(clientId) - 1
+        const nextLevel = listOfLevels[nextLevelIdx]
+        currentPosition = `${nextLevel} - ${currentLevel}`
+      }
     }
   }
   
@@ -107,19 +121,15 @@ function updateMockLevelData() {
   for (const level in levelPositions) {
     const levelPosition = levelPositions[level];
     const positionDiff = Math.abs(virtualLiftPosition - levelPosition);
-    if (positionDiff <= tolerance) {
-      currentLevel=level
-      currentLevels[level] = 'LIFT HERE';
-    } else {
-      currentLevels[level] = 'LIFT AWAY';
-    }
-    
-    // Send mock serial data update (important to keep this for mock data to be sent)
+ 
    
-    const levelStatus = (currentLevel===level)? 'LIFT HERE' : 'LIFT AWAY';
+    const levelStatus = (positionDiff <= tolerance)? 'LIFT HERE' : 'LIFT AWAY';
     const mockData = `${level} : ${levelStatus}`;
-    // console.log(`Mock data update: ${mockData}`);
-    parseLevelData(mockData, level);
+    if(!mockObject.hasOwnProperty(level) || mockObject[level] != mockData) {
+      mockObject[level] = mockData;
+      // console.log(`Mock data update: ${mockData}`);
+      parseLevelData(mockData, level);
+    }
   }
 }
 
@@ -283,12 +293,15 @@ app.post('/refresh-token', (req, res) => {
 
 app.get('/status', verifyToken, (req, res) => {
   try {
-    const currentLevelsDisplay = {}
-    listOfLevels.forEach(level=>{currentLevelsDisplay[level]=(level==currentLevel)? 'LIFT HERE' : 'LIFT AWAY'})
+    // const currentLevelsDisplay = {}
+    // console.log(currentLevels)
+    // listOfLevels.forEach(level=>{currentLevelsDisplay[level]=(level==currentLevel)? 'LIFT HERE' : 'LIFT AWAY'})
     let resObj = {
       up: relayUp.readSync(),
       down: relayDown.readSync(),
-      currentLevels: currentLevelsDisplay, // Updated to return currentLevels object
+      // currentLevels: currentLevels, // Updated to return currentLevels object
+      currentPosition,
+      targetLevel
     }
     res.json(resObj);
     // if (resObj.up || resObj.down) console.error('resObj : ', resObj);
@@ -302,7 +315,7 @@ function mockLiftUpdate(state, direction){
   if (state) {
     if (!virtualLiftMoveInterval) { // Prevent multiple intervals
       virtualLiftMoveInterval = setInterval(() => {
-        const step = (direction === 1)? 0.1 : -0.1;
+        const step = (direction === 1)? 0.05 : -0.05;
         virtualLiftPosition += step;
 
         // Basic boundary checks (can be refined)
@@ -311,7 +324,7 @@ function mockLiftUpdate(state, direction){
         updateMockLevelData(); // Update mock levels based on new position
 
         
-      }, 200); // Interval for movement simulation (adjust as needed)
+      }, 100); // Interval for movement simulation (adjust as needed)
     }
   } else {
     clearInterval(virtualLiftMoveInterval); // Clear interval if running
@@ -326,8 +339,12 @@ app.post('/floor', verifyToken, (req, res) => {
     targetLevel = level;
     console.log(`Lift target level updated to: ${targetLevel}`);
     res.json({ message: `Target level set to ${level}` });
-    if(currentLevel!= targetLevel){
-      const heightDiff = levelPositions[targetLevel] - levelPositions[currentLevel];
+    if(currentPosition!= targetLevel){
+      let numPosition
+      if (currentPosition.includes('-')) numPosition = levelPositions[currentPosition.split(' - ')[0]]+1.5
+      else numPosition = levelPositions[currentPosition]
+      console.log('numPosition : ',numPosition)
+      const heightDiff = levelPositions[targetLevel] - numPosition;
       const desiredDirection = heightDiff > 0 ? 1 : 0;
       
       if (mockLiftMode) {
@@ -347,6 +364,13 @@ app.post('/floor', verifyToken, (req, res) => {
 
 app.post('/stop', verifyToken, (req, res) => {
   console.log('[STOP]');
+  if (mockLiftMode) {
+    // Control virtual lift (mock mode)
+    const direction = 'none'
+    mockLiftUpdate(false, direction)
+    console.log('Controlling virtual lift (mock mode): STOP');
+    
+  }
   relayUp.writeSync(0);
   relayDown.writeSync(0);
 
@@ -358,11 +382,17 @@ app.post('/stop', verifyToken, (req, res) => {
 });
 
 app.post('/control', verifyToken, (req, res) => {
-  const { direction, state } = req.body;
+  let { direction, state } = req.body;
   console.log('/control req.body :\n',req.body);
+  
+  targetLevel=null;
   if (!direction || typeof state !== 'boolean') {
     return res.status(400).json({ error: 'Invalid request parameters' });
   }
+
+  if (direction === 'up' && currentPosition==='2') state = false;
+  else if (direction === 'down' && currentPosition==='B') state = false;
+
   if (mockLiftMode) {
     // Control virtual lift (mock mode)
     mockLiftUpdate(state, direction=== 'up'? 1 : 0)
@@ -373,6 +403,7 @@ app.post('/control', verifyToken, (req, res) => {
   // Control real relays weather serial ports are available or not
   // this is necessary to update the relayUp and relayDown states
   try {
+
     if (direction === 'up') {
       relayUp.writeSync(state ? 1 : 0);
       if (state) relayDown.writeSync(0);

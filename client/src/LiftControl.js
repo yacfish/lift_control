@@ -53,9 +53,11 @@ api_ctl.interceptors.response.use(
 let positionBgY = 0;
 
 function LiftControl({ setIsAuthenticated }) {
-  const [status, setStatus] = useState({ up: false, down: false, currentLevels: {} }); // Updated status state to use currentLevels (plural)
+  const [status, setStatus] = useState({ up: false, down: false, currentPosition: '' }); 
   const [mode, setMode] = useState('home');
   const [error, setError] = useState('');
+  const [selectedFloor, setSelectedFloor] = useState(null); // Track the currently selected floor
+  const [position, setPosition] = useState("Unknown"); // Track the current lift position
   const containerRef = useRef(null);
   const animationRef = useRef(null);
   const showSettingsRef = useRef(null);
@@ -76,6 +78,7 @@ function LiftControl({ setIsAuthenticated }) {
     'G': [btnFloorG, labelFloorG],
     'B': [btnFloorB, labelFloorB],
   };
+  const floorLabels = ['B','G','1','2'];
 
   const sendHeartbeat = useCallback(async () => {
     try {
@@ -93,41 +96,60 @@ function LiftControl({ setIsAuthenticated }) {
     for (const floorStr in floorMap) {
       const floorData = floorMap[floorStr];
       const btnRef = floorData[0].current;
+      const isSelected = floorStr === selectedFloor;
       
       if (btnRef) {
         if (isMoving) {
-          // Make buttons darker and non-clickable when lift is moving
-          btnRef.style.backgroundColor = '#555'; // Darker color
-          btnRef.style.borderColor = '#777';
+          if (isSelected) {
+            // Selected button stays blue but darker when lift is moving
+            btnRef.style.backgroundColor = '#eee';
+            btnRef.style.borderColor = '#dd3333'; // red
+          } else {
+            // Non-selected buttons become dark gray
+            btnRef.style.backgroundColor = '#555'; // Dark gray
+            btnRef.style.borderColor = '#777'; // Dark gray border
+          }
           btnRef.style.cursor = 'not-allowed';
           btnRef.disabled = true;
         } else {
-          // Reset to normal state when lift is not moving
-          btnRef.style.backgroundColor = '#888';
-          btnRef.style.borderColor = '#bababa';
+          if (isSelected) {
+            // Selected button is bright blue when lift is not moving
+            btnRef.style.backgroundColor = '#eee';
+            btnRef.style.borderColor = '#2196f3'; // Bright blue
+          } else {
+            // Non-selected buttons are normal gray
+            btnRef.style.backgroundColor = '#888';
+            btnRef.style.borderColor = '#bababa';
+          }
           btnRef.style.cursor = 'pointer';
           btnRef.disabled = false;
         }
       }
     }
-  }, [status.up, status.down, floorMap]);
+  }, [status.up, status.down, floorMap, selectedFloor]);
 
   useEffect(() => {
     const fetchStatus = async () => {
-      console.log('fetchStatus called'); // Log when fetchStatus is called
+      // console.log('fetchStatus called'); // Log when fetchStatus is called
       try {
         const response = await api_ctl.get('/status');
-        console.log('fetchStatus response:', response); // Log the response
+        // console.log('fetchStatus response:', response); // Log the response
         const moving = response.data.up || response.data.down;
-        const direction = response.data.up ? 'up' : 'down';
+        const direction = response.data.up ? 'up' : response.data.down ? 'down' : 'none';
         if (moving) {
           stopAnimation();
           animateBackground(direction);
+          if(!response.data.currentPosition.includes('-'))setSelectedFloor(response.data.targetLevel)
         } else {
           stopAnimation();
+          if(!response.data.currentPosition.includes('-')){
+            setSelectedFloor(response.data.currentPosition)
+            console.log('selectedFloor while stopped: ',response.data.currentPosition)
+          }
         }
-        setStatus(response.data); // Update status with all data (now includes currentLevels)
+        setStatus(response.data); 
         setError('');
+       
       } catch (error) {
         console.error('fetchStatus error:', error); // Log the error
         setError('Error fetching lift status. Please try again.');
@@ -135,7 +157,7 @@ function LiftControl({ setIsAuthenticated }) {
     };
 
     fetchStatus();
-    const statusInterval = setInterval(fetchStatus, 500);
+    const statusInterval = setInterval(fetchStatus, 100);
     const heartbeatInterval = setInterval(sendHeartbeat, 1000);
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -153,6 +175,13 @@ function LiftControl({ setIsAuthenticated }) {
   useEffect(() => {
     updateButtonsBasedOnLiftStatus();
   }, [status, updateButtonsBasedOnLiftStatus]);
+  
+  // Update position
+  useEffect(() => {
+    if (status.currentPosition) {
+      setPosition(status.currentPosition);
+    }
+  }, [status.currentPosition]);
 
   const handleVisibilityChange = () => {
     if (document.hidden) {
@@ -189,7 +218,8 @@ function LiftControl({ setIsAuthenticated }) {
     try {
       const newState = !status[direction];
       await api_ctl.post('/control', { direction, state: newState });
-      setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
+      setSelectedFloor(null);
+      // setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
       setError('');
       console.log('newState',newState,'— direction', direction)
       // > newState false — direction up
@@ -242,8 +272,8 @@ function LiftControl({ setIsAuthenticated }) {
     }
   }
   const goToFloor = (requestedFloor) => {
-    // Don't process floor requests if lift is moving
-    if (status.up || status.down) return;
+    // Update selected floor state
+    setSelectedFloor((requestedFloor === '-' && position.includes('-')) ? null : requestedFloor);
     
     for (const floorStr in floorMap){
       const floorData = floorMap[floorStr]
@@ -322,22 +352,24 @@ function LiftControl({ setIsAuthenticated }) {
       <div className="home-container" ref={showHomeRef}>
         
         <table className='level-selector'>
-          <tr className='level-wrapper'>
-            <td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2} /></td>
-            <td><label className='level-label' ref={labelFloor2} htmlFor='lvl2' style={status.currentLevels['2'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>2</label></td>
-          </tr>
-          <tr className='level-wrapper'>
-            <td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1} /></td>
-            <td><label className='level-label' ref={labelFloor1} htmlFor='lvl1' style={status.currentLevels['1'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>1</label></td>
-          </tr>
-          <tr className='level-wrapper'>
-            <td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG} /></td>
-            <td><label className='level-label' ref={labelFloorG} htmlFor='lvlG' style={status.currentLevels['G'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>G</label></td>
-          </tr>
-          <tr className='level-wrapper'>
-            <td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB} /></td>
-            <td><label className='level-label' ref={labelFloorB} htmlFor='lvlB' style={status.currentLevels['B'] === 'LIFT HERE' ? { fontWeight: 'bold', color: 'blue' } : {}}>B</label></td>
-          </tr>
+          <tbody>
+            <tr className='level-wrapper'>
+              <td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2} /></td>
+              <td><label className='level-label' ref={labelFloor2} htmlFor='lvl2' style={position.includes('2') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>2</label></td>
+            </tr>
+            <tr className='level-wrapper'>
+              <td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1} /></td>
+              <td><label className='level-label' ref={labelFloor1} htmlFor='lvl1' style={position.includes('1') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>1</label></td>
+            </tr>
+            <tr className='level-wrapper'>
+              <td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG} /></td>
+              <td><label className='level-label' ref={labelFloorG} htmlFor='lvlG' style={position.includes('G') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>G</label></td>
+            </tr>
+            <tr className='level-wrapper'>
+              <td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB} /></td>
+              <td><label className='level-label' ref={labelFloorB} htmlFor='lvlB' style={position.includes('B') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>B</label></td>
+            </tr>
+          </tbody>
         </table>
       </div>
       <div className='nav-wrapper'>
@@ -351,12 +383,12 @@ function LiftControl({ setIsAuthenticated }) {
           <SettingsImg />
         </button>
       </div>
-      {/* {status.currentLevel && ( // Display current level for debugging */}
-      {status.currentLevels && ( // Display current levels for debugging
+      {/*status.currentPosition && ( // Display current levels for debugging
         <div className="current-level">
           {JSON.stringify(status)}
+          {selectedFloor}
         </div>
-      )}
+      )*/}
     </div>
   );
 }
