@@ -85,6 +85,33 @@ function LiftControl({ setIsAuthenticated }) {
     }
   }, []);
 
+  // Function to update button states based on lift status
+  const updateButtonsBasedOnLiftStatus = useCallback(() => {
+    const isMoving = status.up || status.down;
+    
+    // Update all floor buttons
+    for (const floorStr in floorMap) {
+      const floorData = floorMap[floorStr];
+      const btnRef = floorData[0].current;
+      
+      if (btnRef) {
+        if (isMoving) {
+          // Make buttons darker and non-clickable when lift is moving
+          btnRef.style.backgroundColor = '#555'; // Darker color
+          btnRef.style.borderColor = '#777';
+          btnRef.style.cursor = 'not-allowed';
+          btnRef.disabled = true;
+        } else {
+          // Reset to normal state when lift is not moving
+          btnRef.style.backgroundColor = '#888';
+          btnRef.style.borderColor = '#bababa';
+          btnRef.style.cursor = 'pointer';
+          btnRef.disabled = false;
+        }
+      }
+    }
+  }, [status.up, status.down, floorMap]);
+
   useEffect(() => {
     const fetchStatus = async () => {
       console.log('fetchStatus called'); // Log when fetchStatus is called
@@ -121,6 +148,11 @@ function LiftControl({ setIsAuthenticated }) {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [sendHeartbeat]);
+
+  // Update button states whenever status changes
+  useEffect(() => {
+    updateButtonsBasedOnLiftStatus();
+  }, [status, updateButtonsBasedOnLiftStatus]);
 
   const handleVisibilityChange = () => {
     if (document.hidden) {
@@ -210,6 +242,9 @@ function LiftControl({ setIsAuthenticated }) {
     }
   }
   const goToFloor = (requestedFloor) => {
+    // Don't process floor requests if lift is moving
+    if (status.up || status.down) return;
+    
     for (const floorStr in floorMap){
       const floorData = floorMap[floorStr]
       const btnRef = floorData[0].current
@@ -319,7 +354,7 @@ function LiftControl({ setIsAuthenticated }) {
       {/* {status.currentLevel && ( // Display current level for debugging */}
       {status.currentLevels && ( // Display current levels for debugging
         <div className="current-level">
-          Current Levels: {JSON.stringify(status.currentLevels)}
+          {JSON.stringify(status)}
         </div>
       )}
     </div>
