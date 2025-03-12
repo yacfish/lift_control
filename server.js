@@ -273,10 +273,10 @@ app.post('/login', async (req, res) => {
 });
 
 app.post('/refresh-token', (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken) {
-    return res.status(401).json({ error: 'Refresh token required' });
-  }
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) {
+        return res.status(401).json({ error: 'Refresh token required' });
+    }
 
   jwt.verify(refreshToken, refreshTokenSecret, (err, decoded) => {
     if (err) {
@@ -288,11 +288,22 @@ app.post('/refresh-token', (req, res) => {
     const accessToken = jwt.sign({ username: decoded.username }, accessTokenSecret, { expiresIn: '15m' });
     res.cookie('accessToken', accessToken, { httpOnly: true, secure: true, sameSite: 'Strict' });
     return res.status(200).json({ message: 'Access token refreshed' });
-  });
+    });
+});
+
+app.get('/check-auth', verifyToken, (req, res) => { // Added /check-auth endpoint
+    res.status(200).json({ message: 'Authenticated' }); // Return 200 if token is valid
+});
+
+app.post('/logout', verifyToken, (req, res) => {
+  // Clear access and refresh tokens by setting empty cookies with immediate expiry
+  res.cookie('accessToken', '', { httpOnly: true, secure: true, sameSite: 'Strict', expires: new Date(0) });
+  res.cookie('refreshToken', '', { httpOnly: true, secure: true, sameSite: 'Strict', expires: new Date(0) });
+  return res.status(200).json({ message: 'Logout successful' });
 });
 
 app.get('/status', verifyToken, (req, res) => {
-  try {
+    try {
     // const currentLevelsDisplay = {}
     // console.log(currentLevels)
     // listOfLevels.forEach(level=>{currentLevelsDisplay[level]=(level==currentLevel)? 'LIFT HERE' : 'LIFT AWAY'})
