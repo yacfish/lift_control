@@ -10,7 +10,7 @@ let targetLevel = 'none'; // Initial target level
 let virtualLiftMoveInterval; // Variable to hold the interval
 let mockLiftMode = false; // Mock lift mode variable, false by default
 let mockGeneratorCount = 0; // Counter for mock generator calls
-const mockObject = {}
+const mockLevelObject = {}
 const levelPositions = { // Level positions in meters
   'B': -3,
   'G': 0,
@@ -125,11 +125,11 @@ function updateMockLevelData() {
  
    
     const levelStatus = (positionDiff <= tolerance)? 'LIFT HERE' : 'LIFT AWAY';
-    const mockData = `${level} : ${levelStatus}`;
-    if(!mockObject.hasOwnProperty(level) || mockObject[level] != mockData) {
-      mockObject[level] = mockData;
-      // console.log(`Mock data update: ${mockData}`);
-      parseLevelData(mockData);
+    const mockLevelData = `${level} : ${levelStatus}`;
+    if(!mockLevelObject.hasOwnProperty(level) || mockLevelObject[level] != mockLevelData) {
+      mockLevelObject[level] = mockLevelData;
+      // console.log(`Mock data update: ${mockLevelData}`);
+      parseLevelData(mockLevelData);
     }
   }
 }
