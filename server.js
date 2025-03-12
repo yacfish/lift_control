@@ -66,14 +66,15 @@ let currentLevel = 'none'
 let currentPosition = 'none'
 
 // Function to parse serial data and determine the level
-function parseLevelData(data, clientId) { // Added clientId parameter
+function parseLevelData(data) {
   const parts = data.split(' : ');
+  const level = parts[0];
   if (parts.length === 2) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
-      currentLevel = clientId
-      currentPosition = clientId
-      currentLevels[clientId] = 'LIFT HERE';
+      currentLevel = level
+      currentPosition = level
+      currentLevels[level] = 'LIFT HERE';
       if (targetLevel === currentLevel || currentLevel === 'B' || currentLevel === '2') {
         console.log(`PRESENCE SENSOR TRIGGERED > Lift reached target level: ${targetLevel}`);
         relayUp.writeSync(0);
@@ -86,15 +87,15 @@ function parseLevelData(data, clientId) { // Added clientId parameter
         console.log(`PRESENCE SENSOR TRIGGERED > Lift reached level: ${currentLevel}`);
       }
     } else if (message === 'LIFT AWAY') {
-      currentLevels[clientId] = 'LIFT AWAY';
-      console.log(`PRESENCE SENSOR TRIGGERED > Lift left level ${clientId}`);
+      currentLevels[level] = 'LIFT AWAY';
+      console.log(`PRESENCE SENSOR TRIGGERED > Lift left level ${level}`);
       if (relayUp.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(clientId) + 1
+        const nextLevelIdx = listOfLevels.indexOf(level) + 1
         const nextLevel = listOfLevels[nextLevelIdx]
         currentPosition = `${currentLevel} - ${nextLevel}`
       }
       else if (relayDown.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(clientId) - 1
+        const nextLevelIdx = listOfLevels.indexOf(level) - 1
         const nextLevel = listOfLevels[nextLevelIdx]
         currentPosition = `${nextLevel} - ${currentLevel}`
       }
@@ -103,8 +104,8 @@ function parseLevelData(data, clientId) { // Added clientId parameter
   
 }
 
-function createMockSerialDataGenerator(clientId) { // Removed initialLevel parameter
-  console.log(`Creating mock data generator for ${clientId}`); // Log mock data generator creation
+function createMockSerialDataGenerator(portPath) { // Removed initialLevel parameter
+  console.log(`Creating mock data generator for ${portPath}`); // Log mock data generator creation
 
   mockGeneratorCount++; // Increment mock generator call count
   if (mockGeneratorCount >= 4) {
@@ -113,7 +114,7 @@ function createMockSerialDataGenerator(clientId) { // Removed initialLevel param
   }
 
   updateMockLevelData(); // Call updateMockLevelData to set initial level based on virtualLiftPosition
-  // console.log(`Mock data generator for ${clientId} initialized to: ${clientId} : ${currentLevels[clientId]}`); // Log initial level
+
 }
 
 function updateMockLevelData() {
@@ -128,15 +129,14 @@ function updateMockLevelData() {
     if(!mockObject.hasOwnProperty(level) || mockObject[level] != mockData) {
       mockObject[level] = mockData;
       // console.log(`Mock data update: ${mockData}`);
-      parseLevelData(mockData, level);
+      parseLevelData(mockData);
     }
   }
 }
 
 
 // Initialize serial ports and parsers
-portPaths.forEach((path, index) => {
-  const clientId = listOfLevels[index];
+portPaths.forEach((path) => {
   console.log(`Attempting to initialize serial port: ${path}`); // Log before SerialPort
 
   const port = new SerialPort({ path: path, baudRate: 57600 });
@@ -152,7 +152,7 @@ portPaths.forEach((path, index) => {
 
   parser.on('data', data => {
     console.log(`Data from ${path}: ${data}`);
-    parseLevelData(data, clientId); // Call the parsing function with clientId
+    parseLevelData(data); // Call the parsing function
   });
 
   port.on('error', error => { // Attach error listener to port, not parser
@@ -160,7 +160,7 @@ portPaths.forEach((path, index) => {
     console.error(`Error type (port.on('error')): ${error.constructor.name}`); // Log error type
     console.error(`Full error object (port.on('error'))::`, error); // Log full error object
     console.log(`Initializing mock data generator due to serial port error for ${path}`); // Log mock data generator execution
-    createMockSerialDataGenerator(clientId); // Corrected: Call mock data generator (no initialLevel parameter)
+    createMockSerialDataGenerator(); // Corrected: Call mock data generator (no initialLevel parameter)
   });
   console.log(`port.on('error') listener attached for ${path}`); // Log after attaching error listener
 });
