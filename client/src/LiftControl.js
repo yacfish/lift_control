@@ -144,7 +144,7 @@ function LiftControl({ setIsAuthenticated }) {
           stopAnimation();
           if(!response.data.currentPosition.includes('-')){
             setSelectedFloor(response.data.currentPosition)
-            console.log('selectedFloor while stopped: ',response.data.currentPosition)
+            // console.log('selectedFloor while stopped: ',response.data.currentPosition)
           }
         }
         setStatus(response.data); 
@@ -221,7 +221,7 @@ function LiftControl({ setIsAuthenticated }) {
       setSelectedFloor(null);
       // setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
       setError('');
-      console.log('newState',newState,'— direction', direction)
+      // console.log('newState',newState,'— direction', direction)
       // > newState false — direction up
       // > newState true — direction down
       
@@ -240,7 +240,7 @@ function LiftControl({ setIsAuthenticated }) {
     }
   };
   const navHome = ()=>{
-    console.log('navHome')
+    // console.log('navHome')
     setMode('home')
     if (showSettingsRef.current) {
       showSettingsRef.current.style.display = 'none';
@@ -256,7 +256,7 @@ function LiftControl({ setIsAuthenticated }) {
     }
   }
   const navSettings = ()=>{
-    console.log('navSettings')
+    // console.log('navSettings')
     setMode('settings')
     if (showSettingsRef.current) {
       showSettingsRef.current.style.display = 'flex';
@@ -290,7 +290,7 @@ function LiftControl({ setIsAuthenticated }) {
       }
     }
     if (requestedFloor==='-')return
-    console.log('floor', requestedFloor)
+    // console.log('floor', requestedFloor)
     api_ctl.post('/floor', { floor: requestedFloor });
   }
   const goToFloor2 = () => {
@@ -306,7 +306,7 @@ function LiftControl({ setIsAuthenticated }) {
     goToFloor('B')
   }
   const stopLift = () => {
-    console.log('STOP')
+    // console.log('STOP')
     api_ctl.post('/stop', {});
     goToFloor('-')
   }
