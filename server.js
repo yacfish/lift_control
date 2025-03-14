@@ -21,8 +21,8 @@ const levelPositions = { // Level positions in meters
 const positionTolerance = 0.05; // 1cm tolerance for "LIFT HERE"
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const https = require('https');
-// const http = require('http');
+// const https = require('https');
+const http = require('http');
 
 const fs = require('fs');
 const cookieParser = require('cookie-parser');
@@ -179,15 +179,11 @@ app.use((req, res, next) => {
 });
 app.use(cookieParser());
 app.use(cors({
-  origin: 'http://localhost:3000', // Allow HTTP origin for development
+  origin: 'http://localhost:3000',
   credentials: true
 }));
 const PORT = process.env.PORT || 5000;
 
-const options = {
-  key: fs.readFileSync('./server.key'),
-  cert: fs.readFileSync('./server.crt')
-};
 
 // JWT secret keys
 const accessTokenSecret = 'your_access_token_secret';
@@ -450,21 +446,16 @@ setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL);
 
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
 });
 
-app.get('/server.crt', (req, res) => {
-  res.sendFile(path.join(__dirname, 'server.crt'));
+
+http.createServer(app).listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
 
-https.createServer(options, app).listen(PORT, () => {
-  console.log(`Server running on https://localhost:${PORT}`);
-});
-
-// http.createServer(app).listen(PORT, () => {
-//   console.log(`Server running on http://localhost:${PORT}`);
-// });
 process.on('SIGINT', () => {
   try {
     turnOffRelays();

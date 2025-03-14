@@ -53,9 +53,6 @@ function Login({ setIsAuthenticated }) {
         </button>
       </form>
       {error && <p className="error">{error}</p>}
-    <div style={{ position: 'absolute', bottom: '10px', left: '0', width: '100%', textAlign: 'center', fontSize: '0.7em' }}>
-        <a href="/server.crt">Install Certificate</a>
-      </div>
     </div>
   );
 }
