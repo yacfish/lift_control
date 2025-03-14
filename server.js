@@ -51,10 +51,10 @@ class GpioRelayGroup {
 const ports = [];
 const parsers = [];
 const portPaths = [
-  '/dev/cu.usbserial-40',
-  '/dev/cu.usbserial-41',
-  '/dev/cu.usbserial-42',
-  '/dev/cu.usbserial-43',
+  '/dev/ttyUSB0',
+  '/dev/ttyUSB1',
+  '/dev/ttyUSB2',
+  '/dev/ttyUSB3'
 ];
 const listOfLevels = ['B', 'G', '1', '2']
 
