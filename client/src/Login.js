@@ -18,6 +18,7 @@ function Login({ setIsAuthenticated }) {
       setIsAuthenticated(true);
     } catch (error) {
       if (error.response) {
+        // console.log(error.response);
         setError(error.response.data.error || 'An error occurred during login');
       } else if (error.request) {
         setError('No response received from the server. Please try again.');
