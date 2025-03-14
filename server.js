@@ -1,4 +1,5 @@
 const express = require('express');
+
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
 const { execSync } = require('child_process');
@@ -199,8 +200,10 @@ const user = {
 // Set up GPIO pins for relays (adjust pin numbers as needed)
 let relayUp, relayDown;
 try {
-  relayDown = new GpioRelayGroup(12, 16, 'DOWN');
-  relayUp = new GpioRelayGroup(23, 24, 'UP');
+
+relayDown = new GpioRelayGroup(12, 16, 'DOWN');
+relayUp = new GpioRelayGroup(23, 24, 'UP');
+
 } catch (error) {
   relayDown = false;
   relayUp = false;
