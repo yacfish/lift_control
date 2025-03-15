@@ -146,6 +146,7 @@ input:disabled + .slider {
   display: flex;
   flex-direction: row;
   justify-content: space-between;
+  align-items: center;
 }
 .stop-btn {
   background-color: #fff0;

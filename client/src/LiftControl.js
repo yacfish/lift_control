@@ -80,7 +80,7 @@ api_ctl.interceptors.response.use(
 let positionBgY = 0;
 
 function LiftControl({ setIsAuthenticated }) {
-  const [status, setStatus] = useState({ up: false, down: false, currentPosition: '' }); 
+  const [status, setStatus] = useState({ up: false, down: false, currentPosition: '', displayMessage: 'Idle' }); 
   const [mode, setMode] = useState('home');
   const [error, setError] = useState('');
   const [selectedFloor, setSelectedFloor] = useState(null); // Track the currently selected floor
@@ -403,6 +403,9 @@ function LiftControl({ setIsAuthenticated }) {
         <button className='stop-btn' onClick={stopLift}>
           <StopImg />
         </button>
+        <label className='level-label' style={{ color: '#333', fontSize: '2.5rem', textShadow: '0px 0px 10px #fff' }}>
+          {status.displayMessage!="Idle" ? status.displayMessage : ""}
+        </label>
         <button className='home-btn' onClick={navHome} ref={showHomeButtonRef}>
           <HomeImg />
         </button>

@@ -65,8 +65,12 @@ const listOfLevels = ['B', 'G', '1', '2']
 const currentLevels = {};
 listOfLevels.forEach(level=>{currentLevels[level]=null})
     
-let currentLevel = 'none'
-let currentPosition = 'none'
+let currentLevel = 'none';
+let currentPosition = 'none';
+let displayMessage = 'Idle';
+let liftState = 'Idle';
+let manual = false;
+let clearDisplayMessageTimeout;
 
 // Function to parse serial data and determine the level
 function parseLevelData(data) {
@@ -75,11 +79,17 @@ function parseLevelData(data) {
   if (parts.length === 2) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
-      currentLevel = level
-      currentPosition = level
+      currentLevel = level;
+      currentPosition = level;
       currentLevels[level] = 'LIFT HERE';
       if (targetLevel === currentLevel || currentLevel === 'B' || currentLevel === '2') {
-        console.log(`PRESENCE SENSOR TRIGGERED > Lift reached target level: ${targetLevel}`);
+        displayMessage = `Level ${currentLevel} Reached`;
+        setTimeout(() => {
+          displayMessage = liftState;
+        }, 2000);
+        console.log(
+          `PRESENCE SENSOR TRIGGERED > Lift reached target level: ${targetLevel}`
+        );
         relayUp.writeSync(0);
         relayDown.writeSync(0);
         clearInterval(virtualLiftMoveInterval);
@@ -266,12 +276,16 @@ app.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Username and password are required' });
   }
 
-  console.log('Login attempt for user:', req.body.username)
+  console.log('Login attempt for user:', req.body.username);
   // In a real application, you would validate against a database
   if (username === user.username && bcrypt.compareSync(password, user.password)) {
     // Generate tokens
     const accessToken = jwt.sign({ username: user.username }, accessTokenSecret, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({ username: user.username }, refreshTokenSecret, { expiresIn: '7d' });
+    displayMessage = "You're in!";
+    clearTimeout(clearDisplayMessageTimeout);
+    clearDisplayMessageTimeout = setTimeout(() => {
+      displayMessage = liftState;
+    }, 2000);
 
     // Set tokens as HttpOnly cookies
     res.cookie('accessToken', accessToken, { httpOnly: true, sameSite: 'Lax' });
@@ -310,7 +324,7 @@ app.post('/refresh-token', (req, res) => {
 });
 
 app.get('/check-auth', verifyToken, (req, res) => { // Added /check-auth endpoint
-  console.log('Authenticated')  
+  console.log('Authenticated')
   res.status(200).json({ message: 'Authenticated' }); // Return 200 if token is valid
 });
 
@@ -322,7 +336,7 @@ app.post('/logout', verifyToken, (req, res) => {
 });
 
 app.get('/status', verifyToken, (req, res) => {
-    try {
+  try {
     // const currentLevelsDisplay = {}
     // console.log(currentLevels)
     // listOfLevels.forEach(level=>{currentLevelsDisplay[level]=(level==currentLevel)? 'LIFT HERE' : 'LIFT AWAY'})
@@ -331,8 +345,9 @@ app.get('/status', verifyToken, (req, res) => {
       down: relayDown.readSync(),
       // currentLevels: currentLevels, // Updated to return currentLevels object
       currentPosition,
-      targetLevel
-    }
+      targetLevel,
+      displayMessage: displayMessage,
+    };
     res.json(resObj);
     // if (resObj.up || resObj.down) console.error('resObj : ', resObj);
   } catch (error) {
@@ -363,43 +378,58 @@ function mockLiftUpdate(state, direction){
   }
 }
 app.post('/floor', verifyToken, (req, res) => {
-  console.log('[floor]',req.body);
+  console.log('[floor]', req.body);
   const level = req.body.floor;
   if (level && levelPositions.hasOwnProperty(level)) {
     targetLevel = level;
+    displayMessage = `Level ${level} requested`;
+    clearTimeout(clearDisplayMessageTimeout);
+    clearDisplayMessageTimeout = setTimeout(() => {
+      displayMessage = liftState;
+    }, 2000);
     console.log(`Lift target level updated to: ${targetLevel}`);
     res.json({ message: `Target level set to ${level}` });
-    if(currentPosition!= targetLevel){
-      let numPosition
-      if (currentPosition.includes('-')) numPosition = levelPositions[currentPosition.split(' - ')[0]]+1.5
-      else numPosition = levelPositions[currentPosition]
-      console.log('numPosition : ',numPosition)
+    if (currentPosition != targetLevel) {
+      let numPosition;
+      if (currentPosition.includes('-'))
+        numPosition = levelPositions[currentPosition.split(' - ')[0]] + 1.5;
+      else numPosition = levelPositions[currentPosition];
+      console.log('numPosition : ', numPosition);
       const heightDiff = levelPositions[targetLevel] - numPosition;
       const desiredDirection = heightDiff > 0 ? 1 : 0;
-      
+
       if (mockLiftMode) {
         // Control virtual lift (mock mode)
-        mockLiftUpdate(true, desiredDirection)
-        console.log(`Controlling virtual lift (mock mode): direction=${(desiredDirection? 'up' : 'down')}, state=${true}`);
-        
+        mockLiftUpdate(true, desiredDirection);
+        console.log(
+          `Controlling virtual lift (mock mode): direction=${
+            desiredDirection ? 'up' : 'down'
+          }, state=${true}`
+        );
       }
-      
+
       relayUp.writeSync(desiredDirection);
-      relayDown.writeSync(1-desiredDirection);
-    } else targetLevel=null;
+      relayDown.writeSync(1 - desiredDirection);
+      liftState = desiredDirection ? 'Going Up' : 'Going Down';
+      manual = false;
+    } else targetLevel = null;
   } else {
     res.status(400).json({ error: 'Invalid level specified' });
   }
-})
+});
 
 app.post('/stop', verifyToken, (req, res) => {
   console.log('[STOP]');
+  displayMessage = 'Emergency STOP';
+  clearTimeout(clearDisplayMessageTimeout);
+   clearDisplayMessageTimeout = setTimeout(() => {
+    displayMessage = liftState;
+  }, 2000);
   if (mockLiftMode) {
     // Control virtual lift (mock mode)
-    const direction = 'none'
-    mockLiftUpdate(false, direction)
+    const direction = 'none';
+    mockLiftUpdate(false, direction);
     console.log('Controlling virtual lift (mock mode): STOP');
-    
   }
   relayUp.writeSync(0);
   relayDown.writeSync(0);
@@ -413,37 +443,44 @@ app.post('/stop', verifyToken, (req, res) => {
 
 app.post('/control', verifyToken, (req, res) => {
   let { direction, state } = req.body;
-  console.log('/control req.body :\n',req.body);
-  
-  targetLevel=null;
+  console.log('/control req.body :\\n', req.body);
+
+  targetLevel = null;
   if (!direction || typeof state !== 'boolean') {
     return res.status(400).json({ error: 'Invalid request parameters' });
   }
 
-  if (direction === 'up' && currentPosition==='2') state = false;
-  else if (direction === 'down' && currentPosition==='B') state = false;
+  if (direction === 'up' && currentPosition === '2') state = false;
+  else if (direction === 'down' && currentPosition === 'B') state = false;
 
   if (mockLiftMode) {
     // Control virtual lift (mock mode)
-    mockLiftUpdate(state, direction=== 'up'? 1 : 0)
-    console.log(`Controlling virtual lift (mock mode): direction=${direction}, state=${state}`);
-    
+    mockLiftUpdate(state, direction === 'up' ? 1 : 0);
+    console.log(
+      `Controlling virtual lift (mock mode): direction=${direction}, state=${state}`
+    );
   }
 
   // Control real relays weather serial ports are available or not
   // this is necessary to update the relayUp and relayDown states
   try {
-
     if (direction === 'up') {
       relayUp.writeSync(state ? 1 : 0);
       if (state) relayDown.writeSync(0);
+      displayMessage = state ? 'Manual up' : liftState;
     } else if (direction === 'down') {
       relayDown.writeSync(state ? 1 : 0);
       if (state) relayUp.writeSync(0);
+      displayMessage = state ? 'Manual down' : liftState;
     } else {
       return res.status(400).json({ error: 'Invalid direction' });
     }
-
+    manual = true;
+    liftState = state ? (direction === 'up' ? 'Going Up' : 'Going Down') : 'Idle';
+    clearTimeout(clearDisplayMessageTimeout);
+    clearDisplayMessageTimeout = setTimeout(() => {
+      displayMessage = liftState;
+    }, 2000);
     res.sendStatus(200);
   } catch (error) {
     // console.error('Error controlling GPIO');
