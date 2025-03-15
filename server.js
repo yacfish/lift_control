@@ -84,14 +84,20 @@ function parseLevelData(data) {
       currentLevels[level] = 'LIFT HERE';
       if (targetLevel === currentLevel || currentLevel === 'B' || currentLevel === '2') {
         displayMessage = `Level ${currentLevel} Reached`;
-        setTimeout(() => {
+        clearTimeout(clearDisplayMessageTimeout);
+        clearDisplayMessageTimeout = setTimeout(() => {
           displayMessage = liftState;
         }, 2000);
         console.log(
           `PRESENCE SENSOR TRIGGERED > Lift reached target level: ${targetLevel}`
         );
+
         relayUp.writeSync(0);
         relayDown.writeSync(0);
+        
+        liftState = 'Idle';
+        manual = false;
+        targetLevel = null;
         clearInterval(virtualLiftMoveInterval);
         virtualLiftMoveInterval = null;
         virtualLiftMovingDirection = null;
@@ -433,6 +439,9 @@ app.post('/stop', verifyToken, (req, res) => {
   }
   relayUp.writeSync(0);
   relayDown.writeSync(0);
+  liftState = 'Idle';
+  manual = false;
+  targetLevel = null;
 
   virtualLiftMovingDirection = null; // Stop virtual lift movement
   clearInterval(virtualLiftMoveInterval); // Clear interval if running
