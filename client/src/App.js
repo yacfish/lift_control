@@ -28,25 +28,35 @@ api.interceptors.response.use(
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const checkAuth = async () => {
+      // Retrieve token from localStorage
+      const token = localStorage.getItem('accessToken');
+       // If we've no token, return user to the login screen
+       if (!token) {
+          setIsAuthenticated(false)
+          return;
+        }
       try {
-        await api.get('/check-auth');
-        setIsAuthenticated(true);
+        // Set Auth Header before check authentication
+        api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+        const response = await api.get('/check-auth');
+        if (response.status === 200) {
+          setIsAuthenticated(true);
+        } else {
+          setIsAuthenticated(false);
+        }
       } catch (error) {
         console.error('Authentication check failed:', error);
-      } finally {
-        setIsLoading(false);
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        setIsAuthenticated(false);
       }
     };
+
     checkAuth();
   }, []);
-
-  if (isLoading) {
-    return <div>Loading...</div>;
-  }
   return (
     <div className="App">
       {isAuthenticated ? (

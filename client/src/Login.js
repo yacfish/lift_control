@@ -12,13 +12,24 @@ function Login({ setIsAuthenticated }) {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-
+  
     try {
-      await axios.post('/login', { username, password }, { withCredentials: true });
-      setIsAuthenticated(true);
+      const response = await axios.post('/login', { username, password }, { withCredentials: true });
+  
+      // IMPORTANT: Get token and refresh token from the response
+      const accessToken = response.data.token; // Assuming the server sends a 'token' field
+      const refreshToken = response.data.refreshToken; // Assuming server also returns a refresh token
+  
+      // IMPORTANT: Store both tokens (access and refresh) in localStorage
+      localStorage.setItem('accessToken', accessToken);
+      localStorage.setItem('refreshToken', refreshToken); //Also, take refreshToken just in case
+  
+      setIsAuthenticated(true); // Now set authentication state
+      console.log('Login successful! Access Token saved.'); //Success message
     } catch (error) {
       if (error.response) {
-        // console.log(error.response);
+        // Log the error
+        console.log("Client log error status and data",error.response.status, error.response.data);
         setError(error.response.data.error || 'An error occurred during login');
       } else if (error.request) {
         setError('No response received from the server. Please try again.');

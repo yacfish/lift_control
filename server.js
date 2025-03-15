@@ -182,7 +182,7 @@ app.use(cors({
   origin: 'http://localhost:3000',
   credentials: true
 }));
-const PORT = process.env.PORT || 80;
+const PORT = process.env.PORT || 5000;
 
 
 // JWT secret keys
@@ -236,16 +236,25 @@ app.use((err, req, res, next) => {
 
 // Middleware to verify JWT
 const verifyToken = (req, res, next) => {
-  // console.log('req.url:', req.url);
-  const token = req.cookies.accessToken;
-  // console.log('Received token:', token);
+  const accessToken = req.cookies.accessToken;
+  const refreshToken = req.cookies.refreshToken;
+  //console.log('req.url:', req.url);
+  // console.log('Cookies:', req.cookies);
 
-  if (!token) {
-    if (req.url === '/check-auth' && !req.cookies.refreshToken) return res.status(401).json({ error: 'Access token required' });
-    else return res.status(403).json({ error: 'Access token required' });
+  if (req.url === '/check-auth') {
+    // Allow access even without a token for /check-auth, client will be responsible of authentication if fails 
+    return next();
   }
-  jwt.verify(token, accessTokenSecret, (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Invalid token' });
+  if (!accessToken) {
+      console.log('Access token required')
+      return res.status(403).json({ error: 'Access token required' });
+    }
+
+  jwt.verify(accessToken, accessTokenSecret, (err, decoded) => {
+    if (err) {
+          console.log('Access token invalid');
+      return res.status(403).json({ error: 'Invalid access token' });
+    }
     req.user = decoded;
     next();
   });
@@ -257,6 +266,7 @@ app.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Username and password are required' });
   }
 
+  console.log('Login attempt for user:', req.body.username)
   // In a real application, you would validate against a database
   if (username === user.username && bcrypt.compareSync(password, user.password)) {
     // Generate tokens
@@ -264,11 +274,15 @@ app.post('/login', async (req, res) => {
     const refreshToken = jwt.sign({ username: user.username }, refreshTokenSecret, { expiresIn: '7d' });
 
     // Set tokens as HttpOnly cookies
-    res.cookie('accessToken', accessToken, { httpOnly: true, secure: true, sameSite: 'Strict' });
-    res.cookie('refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'Strict' });
+    res.cookie('accessToken', accessToken, { httpOnly: true, sameSite: 'Lax' });
+    res.cookie('refreshToken', refreshToken, { httpOnly: true, sameSite: 'Lax' });
 
+    console.log('Login success for user', req.body.username);
+    console.log('accessToken', accessToken);
+    console.log('refreshToken', refreshToken);
     return res.status(200).json({ message: 'Login successful' });
   } else {
+    console.log('User not found:', req.body.username);
     return res.status(401).json({ error: 'Invalid username or password' });
   }
 });
@@ -276,30 +290,34 @@ app.post('/login', async (req, res) => {
 app.post('/refresh-token', (req, res) => {
     const refreshToken = req.cookies.refreshToken;
     if (!refreshToken) {
-        return res.status(401).json({ error: 'Refresh token required' });
+      console.log('Refresh token required')
+      return res.status(401).json({ error: 'Refresh token required' });
     }
 
   jwt.verify(refreshToken, refreshTokenSecret, (err, decoded) => {
     if (err) {
+      console.log('Invalid refresh token')
       return res.status(403).json({ error: 'Invalid refresh token' });
     }
 
     // In real application, you should check if the refresh token is still valid in database
 
     const accessToken = jwt.sign({ username: decoded.username }, accessTokenSecret, { expiresIn: '15m' });
-    res.cookie('accessToken', accessToken, { httpOnly: true, secure: true, sameSite: 'Strict' });
+    res.cookie('accessToken', accessToken, { httpOnly: true, sameSite: 'Lax' });
+    console.log('Access token refreshed')
     return res.status(200).json({ message: 'Access token refreshed' });
     });
 });
 
 app.get('/check-auth', verifyToken, (req, res) => { // Added /check-auth endpoint
-    res.status(200).json({ message: 'Authenticated' }); // Return 200 if token is valid
+  console.log('Authenticated')  
+  res.status(200).json({ message: 'Authenticated' }); // Return 200 if token is valid
 });
 
 app.post('/logout', verifyToken, (req, res) => {
   // Clear access and refresh tokens by setting empty cookies with immediate expiry
-  res.cookie('accessToken', '', { httpOnly: true, secure: true, sameSite: 'Strict', expires: new Date(0) });
-  res.cookie('refreshToken', '', { httpOnly: true, secure: true, sameSite: 'Strict', expires: new Date(0) });
+  res.cookie('accessToken', '', { httpOnly: true, sameSite: 'Lax', expires: new Date(0) });
+  res.cookie('refreshToken', '', { httpOnly: true, sameSite: 'Lax', expires: new Date(0) });
   return res.status(200).json({ message: 'Logout successful' });
 });
 

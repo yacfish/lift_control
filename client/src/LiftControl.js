@@ -11,8 +11,35 @@ const api_sys = axios.create({
   withCredentials: true
 });
 const api_ctl = axios.create({
-  withCredentials: true
+  withCredentials: true,
+  headers: { // Add AuthHeader to a Axios Initial request.
+    Authorization: `Bearer ${localStorage.getItem('accessToken')}`
+  }
 });
+api_sys.interceptors.request.use(
+  config => {
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  error => {
+    return Promise.reject(error);
+  }
+);
+api_ctl.interceptors.request.use(
+  config => {
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  error => {
+    return Promise.reject(error);
+  }
+);
 api_sys.interceptors.response.use(
   (response) => response,
   async (error) => {
