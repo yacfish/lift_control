@@ -4,8 +4,9 @@ import LiftControl from './LiftControl';
 import Login from './Login';
 import './App.css';
 
-/* export  */const api = axios.create({
-  withCredentials: true
+// Create a single Axios instance for all API calls
+export const api = axios.create({
+  withCredentials: true // This enables cookies to be sent with requests
 });
 api.interceptors.response.use(
   (response) => response,
@@ -31,16 +32,15 @@ function App() {
 
   useEffect(() => {
     const checkAuth = async () => {
-      // Retrieve token from localStorage
-      const token = localStorage.getItem('accessToken');
-       // If we've no token, return user to the login screen
-       if (!token) {
-          setIsAuthenticated(false)
-          return;
-        }
       try {
-        // Set Auth Header before check authentication
-        api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+        // Try to refresh the token first if needed
+        try {
+          await api.post('/refresh-token');
+        } catch (refreshError) {
+          console.log('Token refresh failed or not needed');
+        }
+        
+        // Then check authentication
         const response = await api.get('/check-auth');
         if (response.status === 200) {
           setIsAuthenticated(true);
@@ -49,8 +49,6 @@ function App() {
         }
       } catch (error) {
         console.error('Authentication check failed:', error);
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
         setIsAuthenticated(false);
       }
     };

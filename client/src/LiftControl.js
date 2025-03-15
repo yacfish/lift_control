@@ -5,77 +5,8 @@ import {ReactComponent as StopImg} from './images/stop.svg';
 import {ReactComponent as HomeImg} from './images/home.svg';
 import {ReactComponent as SettingsImg} from './images/settings.svg';
 
-// import {api} from './App';
-import axios from 'axios';
-const api_sys = axios.create({
-  withCredentials: true
-});
-const api_ctl = axios.create({
-  withCredentials: true,
-  headers: { // Add AuthHeader to a Axios Initial request.
-    Authorization: `Bearer ${localStorage.getItem('accessToken')}`
-  }
-});
-api_sys.interceptors.request.use(
-  config => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  error => {
-    return Promise.reject(error);
-  }
-);
-api_ctl.interceptors.request.use(
-  config => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  error => {
-    return Promise.reject(error);
-  }
-);
-api_sys.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if ((error.response.status === 403) && !originalRequest._retry) {
-      originalRequest._retry = true;
-      try {
-        await api_sys.post('/refresh-token');
-        return api_sys(originalRequest);
-      } catch (refreshError) {
-        // Refresh token has failed, redirect to login
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
-    }
-    return Promise.reject(error);
-  }
-);
-api_ctl.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if ((error.response.status === 403) && !originalRequest._retry) {
-      originalRequest._retry = true;
-      try {
-        await api_ctl.post('/refresh-token');
-        return api_ctl(originalRequest);
-      } catch (refreshError) {
-        // Refresh token has failed, redirect to login
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
-    }
-    return Promise.reject(error);
-  }
-);
+// Import the API instance from App.js
+import { api } from './App';
 
 let positionBgY = 0;
 
@@ -109,7 +40,7 @@ function LiftControl({ setIsAuthenticated }) {
 
   const sendHeartbeat = useCallback(async () => {
     try {
-      await api_sys.post('/heartbeat');
+      await api.post('/heartbeat');
     } catch (error) {
       console.error('Error sending heartbeat:', error);
     }
@@ -159,7 +90,7 @@ function LiftControl({ setIsAuthenticated }) {
     const fetchStatus = async () => {
       // console.log('fetchStatus called'); // Log when fetchStatus is called
       try {
-        const response = await api_ctl.get('/status');
+        const response = await api.get('/status');
         // console.log('fetchStatus response:', response); // Log the response
         const moving = response.data.up || response.data.down;
         const direction = response.data.up ? 'up' : response.data.down ? 'down' : 'none';
@@ -244,7 +175,7 @@ function LiftControl({ setIsAuthenticated }) {
   const handleToggle = async (direction) => {
     try {
       const newState = !status[direction];
-      await api_ctl.post('/control', { direction, state: newState });
+      await api.post('/control', { direction, state: newState });
       setSelectedFloor(null);
       // setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
       setError('');
@@ -260,7 +191,7 @@ function LiftControl({ setIsAuthenticated }) {
   
   const handleLogout = async () => {
     try {
-      await api_sys.post('/logout');
+      await api.post('/logout');
       setIsAuthenticated(false);
     } catch (error) {
       console.error('Error logging out:', error);
@@ -318,7 +249,7 @@ function LiftControl({ setIsAuthenticated }) {
     }
     if (requestedFloor==='-')return
     // console.log('floor', requestedFloor)
-    api_ctl.post('/floor', { floor: requestedFloor });
+    api.post('/floor', { floor: requestedFloor });
   }
   const goToFloor2 = () => {
     goToFloor('2')
@@ -334,7 +265,7 @@ function LiftControl({ setIsAuthenticated }) {
   }
   const stopLift = () => {
     // console.log('STOP')
-    api_ctl.post('/stop', {});
+    api.post('/stop', {});
     goToFloor('-')
   }
   return (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import { api } from './App';
 import './Login.css';
 
 function Login({ setIsAuthenticated }) {
@@ -14,18 +14,11 @@ function Login({ setIsAuthenticated }) {
     setIsLoading(true);
   
     try {
-      const response = await axios.post('/login', { username, password }, { withCredentials: true });
-  
-      // IMPORTANT: Get token and refresh token from the response
-      const accessToken = response.data.token; // Assuming the server sends a 'token' field
-      const refreshToken = response.data.refreshToken; // Assuming server also returns a refresh token
-  
-      // IMPORTANT: Store both tokens (access and refresh) in localStorage
-      localStorage.setItem('accessToken', accessToken);
-      localStorage.setItem('refreshToken', refreshToken); //Also, take refreshToken just in case
-  
+      const response = await api.post('/login', { username, password });
+      
+      // The server sets HTTP-only cookies, no need to handle tokens manually
       setIsAuthenticated(true); // Now set authentication state
-      console.log('Login successful! Access Token saved.'); //Success message
+      console.log('Login successful!'); //Success message
     } catch (error) {
       if (error.response) {
         // Log the error

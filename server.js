@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 
 const { SerialPort } = require('serialport');
@@ -202,13 +203,13 @@ const PORT = process.env.PORT || 5000;
 
 
 // JWT secret keys
-const accessTokenSecret = 'your_access_token_secret';
-const refreshTokenSecret = 'your_refresh_token_secret';
+const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET;
+const refreshTokenSecret = process.env.REFRESH_TOKEN_SECRET;
 
-// User credentials (in a real app, store these securely, e.g., in a database)
+// User credentials from environment variables
 const user = {
-  username: 'Spok',
-  password: bcrypt.hashSync('31415', 10)
+  username: process.env.USERNAME,
+  password: bcrypt.hashSync(process.env.PASSWORD, 10)
 };
 
 // Set up GPIO pins for relays (adjust pin numbers as needed)
@@ -254,21 +255,45 @@ app.use((err, req, res, next) => {
 const verifyToken = (req, res, next) => {
   const accessToken = req.cookies.accessToken;
   const refreshToken = req.cookies.refreshToken;
-  //console.log('req.url:', req.url);
-  // console.log('Cookies:', req.cookies);
-
-  if (req.url === '/check-auth') {
-    // Allow access even without a token for /check-auth, client will be responsible of authentication if fails 
+  
+  // 1. Skip token verification for static files and resources
+  if (req.url.startsWith('/static/') || 
+      req.url === '/favicon.ico' || 
+      req.url === '/manifest.json') {
     return next();
   }
-  if (!accessToken) {
-      console.log('Access token required')
-      return res.status(403).json({ error: 'Access token required' });
+  
+  // 2. Endpoints that need special handling
+  if (req.url === '/login') {
+    return next(); // Always allow login attempts
+  }
+  
+  // 3. Endpoints that can work with or without tokens
+  if (req.url === '/check-auth') {
+    if (!accessToken) {
+      return res.status(401).json({ error: 'Not authenticated' });
     }
+    // If token exists, continue to verification below
+  }
+  
+  // 4. Refresh token endpoint needs the refresh token
+  if (req.url === '/refresh-token') {
+    if (!refreshToken) {
+      console.log('Refresh token required');
+      return res.status(401).json({ error: 'Refresh token required' });
+    }
+    return next(); // Let the endpoint handle refresh token verification
+  }
+  
+  // 5. For all other endpoints, verify the access token
+  if (!accessToken) {
+    console.log('Access token required');
+    return res.status(403).json({ error: 'Access token required' });
+  }
 
   jwt.verify(accessToken, accessTokenSecret, (err, decoded) => {
     if (err) {
-          console.log('Access token invalid');
+      console.log('Access token invalid');
       return res.status(403).json({ error: 'Invalid access token' });
     }
     req.user = decoded;
@@ -287,6 +312,8 @@ app.post('/login', async (req, res) => {
   if (username === user.username && bcrypt.compareSync(password, user.password)) {
     // Generate tokens
     const accessToken = jwt.sign({ username: user.username }, accessTokenSecret, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ username: user.username }, refreshTokenSecret, { expiresIn: '7d' });
+    
     displayMessage = "You're in!";
     clearTimeout(clearDisplayMessageTimeout);
     clearDisplayMessageTimeout = setTimeout(() => {
