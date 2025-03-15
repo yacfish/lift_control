@@ -415,7 +415,7 @@ app.post('/floor', verifyToken, (req, res) => {
   const level = req.body.floor;
   if (level && levelPositions.hasOwnProperty(level)) {
     targetLevel = level;
-    displayMessage = `Level ${level} requested`;
+    displayMessage = `Level ${level} Requested`;
     clearTimeout(clearDisplayMessageTimeout);
     clearDisplayMessageTimeout = setTimeout(() => {
       displayMessage = liftState;
@@ -443,7 +443,7 @@ app.post('/floor', verifyToken, (req, res) => {
 
       relayUp.writeSync(desiredDirection);
       relayDown.writeSync(1 - desiredDirection);
-      liftState = desiredDirection ? 'Going Up' : 'Going Down';
+      liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
       manual = false;
     } else targetLevel = null;
   } else {
@@ -503,20 +503,25 @@ app.post('/control', verifyToken, (req, res) => {
     if (direction === 'up') {
       relayUp.writeSync(state ? 1 : 0);
       if (state) relayDown.writeSync(0);
-      displayMessage = state ? 'Manual up' : liftState;
     } else if (direction === 'down') {
       relayDown.writeSync(state ? 1 : 0);
       if (state) relayUp.writeSync(0);
-      displayMessage = state ? 'Manual down' : liftState;
     } else {
       return res.status(400).json({ error: 'Invalid direction' });
     }
     manual = true;
-    liftState = state ? (direction === 'up' ? 'Going Up' : 'Going Down') : 'Idle';
-    clearTimeout(clearDisplayMessageTimeout);
-    clearDisplayMessageTimeout = setTimeout(() => {
+    
+    if (state) {
+      liftState = (direction === 'up') ? 'Manual UP' : 'Manual DOWN';
       displayMessage = liftState;
-    }, 2000);
+    } else {
+      liftState = 'Idle';
+      displayMessage = 'Manual STOP';
+      clearTimeout(clearDisplayMessageTimeout);
+      clearDisplayMessageTimeout = setTimeout(() => {
+        displayMessage = liftState;
+      }, 2000);
+    }
     res.sendStatus(200);
   } catch (error) {
     // console.error('Error controlling GPIO');
