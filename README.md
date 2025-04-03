@@ -2,7 +2,7 @@
 
 ### Install fresh PiOS(64bits) on SD card (min 16Gb)
 
-### Download repo zip and decompress do ~/Documents
+### Download repo zip and decompress to ~/Documents
 
 ### install nvm and node 20.15.0
 
