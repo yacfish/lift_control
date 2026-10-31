@@ -434,6 +434,14 @@ function openSerialPort(path, index, isInitial = false) {
   }
 
   console.log(newDateStr(), `Attempting to open serial port: ${path} (initial: ${isInitial}, backoff: ${retryBackoffs[index]/1000}s)`);
+  // Discard any dead SerialPort object left from a previous connection before creating a fresh one
+  if (ports[index]) {
+    ports[index].removeAllListeners();
+    ports[index].on('error', () => {}); // swallow late errors from the dead object
+    if (!ports[index].destroyed) ports[index].destroy();
+    ports[index] = null;
+  }
+  lastDataTimes[index] = Date.now(); // fresh heartbeat window for the new attempt
   const port = new SerialPort({ path: path, baudRate: 9600 });
   const parser = port.pipe(new ReadlineParser({ delimiter: '\r\n' }));
 
@@ -550,7 +558,15 @@ setInterval(() => {
           clearTimeout(retryTimeouts[index]);
           retryTimeouts[index] = null;
         }
-        ports[index].close();
+        const stalePort = ports[index];
+        stalePort.close(err => {
+          // If close fails (device already gone) force-destroy so the scan can reopen with a fresh object
+          if (err) {
+            console.error(newDateStr(), `Close failed for ${path}: ${err.message}, destroying port`);
+            stalePort.destroy();
+            stalePort.emit('close');
+          }
+        });
       }
     }
   });
