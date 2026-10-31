@@ -369,6 +369,7 @@ function createMockSerialDataGenerator(portPath) {
 }
 
 function updateMockLevelData() {
+  if (!mockLiftMode) return; // never feed virtual readings into real mode
   const tolerance = positionTolerance;
   for (const level in levelPositions) {
     const levelPosition = levelPositions[level];
@@ -891,7 +892,7 @@ app.post('/stop', verifyToken, (req, res) => {
 
   virtualLiftMovingDirection = null; // Stop virtual lift movement
   clearInterval(virtualLiftMoveInterval); // Clear interval if running
-  updateMockLevelData(); // Update mock levels based on stopped position
+  if (mockLiftMode) updateMockLevelData(); // Update mock levels based on stopped position
 
   if (settings.light.currentState && settings.light.auto) {
     clearTimeout(lightTimeoutId);
