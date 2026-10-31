@@ -225,8 +225,7 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
         {error && <div className="error">{error}</div>} {/* Reverted class to "error" */}
         {settingsState.maintenance && settingsState.maintenance.enabled && (
           <div className='banner maintenance-banner'>
-            IGNORE SENSORS ON - door alerts and lock checks off
-            {settingsState.maintenance.until ? ` (until ${new Date(settingsState.maintenance.until).toLocaleTimeString()})` : ''}
+            IGNORE SENSORS ON - door alerts and lock checks off {/* auto-off time is shown in the note under the Doors toggle */}
           </div>
         )}
         {status.fault && (

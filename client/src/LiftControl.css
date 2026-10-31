@@ -124,7 +124,7 @@ input:disabled + .slider {
 /* Overlay just under the title: red error text and banners stack here without moving the page */
 .top-alerts {
   position: absolute;
-  top: 60px;
+  top: 56px;
   left: 5%;
   right: 5%;
   z-index: 10;
@@ -145,7 +145,7 @@ input:disabled + .slider {
   font-family: '2Dumb', Arial, serif; /* same font as the red error text */
   line-height: 1.2;
   text-align: center;
-  padding: 0.4em;
+  padding: 0.2em 0.4em;
   border-radius: 0.5em;
   overflow-wrap: anywhere;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
@@ -247,6 +247,8 @@ input:disabled + .slider {
 
 /* Panel navigation */
 .panel-nav {
+  position: relative;
+  z-index: 11; /* above .top-alerts: if a banner ever grows onto the title row, it goes behind the title and arrows */
   display: flex;
   align-items: center;
   justify-content: space-between;
