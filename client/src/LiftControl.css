@@ -141,7 +141,9 @@ input:disabled + .slider {
   overflow-wrap: anywhere;
 }
 .banner {
-  font-weight: bold;
+  font-size: 1.2rem;
+  font-family: '2Dumb', Arial, serif; /* same font as the red error text */
+  line-height: 1.2;
   text-align: center;
   padding: 0.4em;
   border-radius: 0.5em;
@@ -435,7 +437,9 @@ background: transparent;
 }
 .toggle-note {
   max-width: 100%;
-  font-size: 1.1rem;
+  font-size: 1.2rem;
+  font-family: '2Dumb', Arial, serif; /* app font, same size as the red error text */
+  line-height: 1.2;
   text-align: left;
   overflow-wrap: anywhere;
   margin-top: -10px;
