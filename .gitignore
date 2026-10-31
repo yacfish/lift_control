@@ -2,3 +2,7 @@ html_only/
 node_modules/
 client/build/
 .env
+.env
+env/
+nohup.out
+.DS_Store

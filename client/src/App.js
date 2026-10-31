@@ -1,3 +1,4 @@
+// App.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import LiftControl from './LiftControl';
@@ -29,6 +30,7 @@ api.interceptors.response.use(
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authDisabled, setAuthDisabled] = useState(false); // NEW: Track if auth is disabled
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -44,12 +46,15 @@ function App() {
         const response = await api.get('/check-auth');
         if (response.status === 200) {
           setIsAuthenticated(true);
+          setAuthDisabled(response.data.authDisabled || false); // NEW: Set from server response
         } else {
           setIsAuthenticated(false);
+          setAuthDisabled(false);
         }
       } catch (error) {
         console.error('Authentication check failed:', error);
         setIsAuthenticated(false);
+        setAuthDisabled(false);
       }
     };
 
@@ -58,7 +63,7 @@ function App() {
   return (
     <div className="App">
       {isAuthenticated ? (
-        <LiftControl setIsAuthenticated={setIsAuthenticated} />
+        <LiftControl setIsAuthenticated={setIsAuthenticated} authDisabled={authDisabled} /> // NEW: Pass authDisabled prop
       ) : (
         <Login setIsAuthenticated={setIsAuthenticated} />
       )}

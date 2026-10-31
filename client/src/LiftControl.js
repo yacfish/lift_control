@@ -1,21 +1,36 @@
+// LiftControl.js
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './LiftControl.css';
 
 import {ReactComponent as StopImg} from './images/stop.svg';
 import {ReactComponent as HomeImg} from './images/home.svg';
 import {ReactComponent as SettingsImg} from './images/settings.svg';
+import Settings from './Settings'; // NEW: Import Settings component
 
 // Import the API instance from App.js
 import { api } from './App';
 
 let positionBgY = 0;
 
-function LiftControl({ setIsAuthenticated }) {
+const HEARTBEAT_INTERVAL = 1000; // NEW: Define heartbeat interval (30s)
+
+function LiftControl({ setIsAuthenticated, authDisabled }) {
+  // TEMP DEBUG: Log prop value on mount (remove after testing)
+  console.log('LiftControl mounted with authDisabled:', authDisabled);
+
   const [status, setStatus] = useState({ up: false, down: false, currentPosition: '', displayMessage: 'Idle' }); 
   const [mode, setMode] = useState('home');
   const [error, setError] = useState('');
   const [selectedFloor, setSelectedFloor] = useState(null); // Track the currently selected floor
   const [position, setPosition] = useState("Unknown"); // Track the current lift position
+  const [settingsState, setSettingsState] = useState({ // FIXED: Initialize with defaults
+    doors: { auto: true },
+    light: { auto: true, currentState: false, timeout: 60 },
+    callButton: { enabled: true },
+    manual: { upEnabled: false, downEnabled: false }
+  });
+  const prevIsMovingRef = useRef(false); // NEW: Ref to track previous moving state (add this line if missing)
+
   const containerRef = useRef(null);
   const animationRef = useRef(null);
   const showSettingsRef = useRef(null);
@@ -37,6 +52,19 @@ function LiftControl({ setIsAuthenticated }) {
     'B': [btnFloorB, labelFloorB],
   };
   const floorLabels = ['B','G','1','2'];
+
+  const prevTarget = useRef(null); // NEW: Ref to track previous valid targetLevel
+
+  // Define handleLogout
+  const handleLogout = async () => {
+    try {
+      await api.post('/logout');
+      setIsAuthenticated(false);
+    } catch (error) {
+      console.error('Logout error:', error);
+      setIsAuthenticated(false); // Still log out on client even if server fails
+    }
+  };
 
   const sendHeartbeat = useCallback(async () => {
     try {
@@ -84,252 +112,153 @@ function LiftControl({ setIsAuthenticated }) {
         }
       }
     }
-  }, [status.up, status.down, floorMap, selectedFloor]);
+  }, [status.up, status.down, selectedFloor]);
 
+  // Function to fetch lift status
+  const fetchStatus = useCallback(async () => {
+    try {
+      const response = await api.get('/status');
+      setStatus(response.data);
+      setPosition(response.data.currentPosition || "Unknown");
+      setSettingsState(response.data.settings); // NEW: Update settings state
+      setError('');
+    } catch (error) {
+      console.error('Error fetching status:', error);
+      setError('Error reaching lift server');
+    }
+  }, []);
+
+  // Effect for polling lift status
   useEffect(() => {
-    const fetchStatus = async () => {
-      // console.log('fetchStatus called'); // Log when fetchStatus is called
-      try {
-        const response = await api.get('/status');
-        // console.log('fetchStatus response:', response); // Log the response
-        const moving = response.data.up || response.data.down;
-        const direction = response.data.up ? 'up' : response.data.down ? 'down' : 'none';
-        if (moving) {
-          stopAnimation();
-          animateBackground(direction);
-          if(!response.data.currentPosition.includes('-'))setSelectedFloor(response.data.targetLevel)
-        } else {
-          stopAnimation();
-          if(!response.data.currentPosition.includes('-')){
-            setSelectedFloor(response.data.currentPosition)
-            // console.log('selectedFloor while stopped: ',response.data.currentPosition)
-          }
-        }
-        setStatus(response.data); 
-        setError('');
-       
-      } catch (error) {
-        console.error('fetchStatus error:', error); // Log the error
-        setError('Error fetching lift status. Please try again.');
-      }
-    };
-
     fetchStatus();
-    const statusInterval = setInterval(fetchStatus, 100);
-    const heartbeatInterval = setInterval(sendHeartbeat, 1000);
+    const intervalId = setInterval(fetchStatus, 250); // Poll every .25 seconds
+    return () => clearInterval(intervalId);
+  }, [fetchStatus]);
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      clearInterval(statusInterval);
-      clearInterval(heartbeatInterval);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
+  // Effect for heartbeat
+  useEffect(() => {
+    const heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
+    return () => clearInterval(heartbeatInterval);
   }, [sendHeartbeat]);
 
-  // Update button states whenever status changes
+  // Effect for background animation
   useEffect(() => {
-    updateButtonsBasedOnLiftStatus();
-  }, [status, updateButtonsBasedOnLiftStatus]);
-  
-  // Update position
-  useEffect(() => {
-    if (status.currentPosition) {
-      setPosition(status.currentPosition);
-    }
-  }, [status.currentPosition]);
-
-  const handleVisibilityChange = () => {
-    if (document.hidden) {
-      sendHeartbeat();
-    }
-  };
-
-  const handleBeforeUnload = () => {
-    navigator.sendBeacon('/heartbeat');
-  };
-  const animateBackground = (direction) => {
-    
-    const step = direction === 'up' ? .3 : -.3;
+    const container = containerRef.current;
+    if (!container) return;
 
     const animate = () => {
-      positionBgY += step;
-      
-      if (containerRef.current) {
-        containerRef.current.style.backgroundPosition = `center ${positionBgY}%`;
-      }
+      positionBgY += (status.up ? 0.5 : (status.down ? -0.5 : 0));
+      container.style.backgroundPositionY = `${positionBgY}px`;
       animationRef.current = requestAnimationFrame(animate);
     };
 
-    animate();
-  };
+    animationRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationRef.current);
+  }, [status.up, status.down]);
 
-  const stopAnimation = () => {
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
+  // Effect for updating buttons on status change
+  useEffect(() => {
+    updateButtonsBasedOnLiftStatus();
+  }, [updateButtonsBasedOnLiftStatus]);
+
+  // Effect to update buttons on mode change to 'home'
+  useEffect(() => {
+    if (mode === 'home') {
+      updateButtonsBasedOnLiftStatus();
     }
-  };
+  }, [mode, updateButtonsBasedOnLiftStatus]);
 
-  const handleToggle = async (direction) => {
-    try {
-      const newState = !status[direction];
-      await api.post('/control', { direction, state: newState });
+  // Effect to synchronize selectedFloor based on current status
+  useEffect(() => {
+    if (status.manual) {
       setSelectedFloor(null);
-      // setStatus(prev => ({ ...prev, [direction]: newState, [direction === 'up' ? 'down' : 'up']: false }));
-      setError('');
-      // console.log('newState',newState,'— direction', direction)
-      // > newState false — direction up
-      // > newState true — direction down
-      
-    } catch (error) {
-      setError('Error controlling the lift. Please try again.');
-      console.error('Error controlling lift:', error);
+    } else if (status.targetLevel && status.targetLevel !== 'none') {
+      setSelectedFloor(status.targetLevel);
+    } else if (!status.up && !status.down && ['B', 'G', '1', '2'].includes(status.currentPosition)) {
+      setSelectedFloor(status.currentPosition);
+    } else {
+      setSelectedFloor(null);
     }
-  };
-  
-  const handleLogout = async () => {
+  }, [status.manual, status.targetLevel, status.up, status.down, status.currentPosition]);
+
+  // Effect for toggling home/settings buttons
+  useEffect(() => {
+    if (showHomeButtonRef.current) showHomeButtonRef.current.style.display = mode === 'settings' ? 'flex' : 'none';
+    if (showSettingsButtonRef.current) showSettingsButtonRef.current.style.display = mode === 'home' ? 'flex' : 'none';
+  }, [mode]);
+
+  // Functions for floor selection
+  const goToFloor = async (floor) => {
     try {
-      await api.post('/logout');
-      setIsAuthenticated(false);
+      await api.post('/floor', { floor });
+      setSelectedFloor(floor);
     } catch (error) {
-      console.error('Error logging out:', error);
+      console.error('Error going to floor:', error);
+      setError('Error going to floor');
     }
   };
-  const navHome = ()=>{
-    // console.log('navHome')
-    setMode('home')
-    if (showSettingsRef.current) {
-      showSettingsRef.current.style.display = 'none';
+
+  const goToFloor2 = () => goToFloor('2');
+  const goToFloor1 = () => goToFloor('1');
+  const goToFloorG = () => goToFloor('G');
+  const goToFloorB = () => goToFloor('B');
+
+  // Function to stop the lift
+  const stopLift = async () => {
+    try {
+      await api.post('/stop');
+    } catch (error) {
+      console.error('Error stopping lift:', error);
+      setError('Error stopping lift');
     }
-    if (showHomeRef.current) {
-      showHomeRef.current.style.display = 'flex';
-    }
-    if (showSettingsButtonRef.current) {
-      showSettingsButtonRef.current.style.display = 'flex';
-    }
-    if (showHomeButtonRef.current) {
-      showHomeButtonRef.current.style.display = 'none';
-    }
-  }
-  const navSettings = ()=>{
-    // console.log('navSettings')
-    setMode('settings')
-    if (showSettingsRef.current) {
-      showSettingsRef.current.style.display = 'flex';
-    }
-    if (showHomeRef.current) {
-      showHomeRef.current.style.display = 'none';
-    }
-    if (showSettingsButtonRef.current) {
-      showSettingsButtonRef.current.style.display = 'none';
-    }
-    if (showHomeButtonRef.current) {
-      showHomeButtonRef.current.style.display = 'flex';
-    }
-  }
-  const goToFloor = (requestedFloor) => {
-    // Update selected floor state
-    setSelectedFloor((requestedFloor === '-' && position.includes('-')) ? null : requestedFloor);
-    
-    for (const floorStr in floorMap){
-      const floorData = floorMap[floorStr]
-      const btnRef = floorData[0].current
-      // const labelRef = floorData[1].current
-      if (btnRef){
-        if (floorStr === requestedFloor){
-          btnRef.style.backgroundColor='#eee'
-          btnRef.style.borderColor='#2196f3'
-        } else {
-          btnRef.style.backgroundColor='#888'
-          btnRef.style.borderColor='#bababa'
-        }
-      }
-    }
-    if (requestedFloor==='-')return
-    // console.log('floor', requestedFloor)
-    api.post('/floor', { floor: requestedFloor });
-  }
-  const goToFloor2 = () => {
-    goToFloor('2')
-  }
-  const goToFloor1 = () => {
-    goToFloor('1')
-  }
-  const goToFloorG = () => {
-    goToFloor('G')
-  }
-  const goToFloorB = () => {
-    goToFloor('B')
-  }
-  const stopLift = () => {
-    // console.log('STOP')
-    api.post('/stop', {});
-    goToFloor('-')
-  }
+  };
+
+  // Navigation functions
+  const navHome = () => setMode('home');
+  const navSettings = () => setMode('settings');
+
   return (
-    <div className="lift-control" ref={containerRef}>
-      <div className="menu-bar">
+    <div className="lift-control" ref={containerRef}> {/* Reverted class to "lift-control" */}
+      {error && <div className="error">{error}</div>} {/* Reverted class to "error" */}
+      <div className="menu-bar"> {/* Added back menu-bar */}
         <h1>LIFT CONTROL</h1>
-        <button className="logout-btn" onClick={handleLogout}>Logout</button>
+        {!authDisabled && ( // FIXED: Hide logout if auth disabled
+          <button className="logout-btn" onClick={handleLogout}>Logout</button>
+        )}
       </div>
-      {error && <span className="error">{error}</span>}
-      <div className="toggle-container" ref={showSettingsRef}>
-        <div className="toggle-wrapper">
-          <label className="toggle">
-            <span className="label" style={status.up?
-              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-              >UP</span>
-            <input
-              type="checkbox"
-              checked={status.up}
-              onChange={() => handleToggle('up')}
-              disabled={status.down}
-            />
-            <span className="slider"></span>
-          </label>
-        </div>
-        <div className="toggle-wrapper">
-          <label className="toggle">
-            <span className="label" style={status.down?
-              {textShadow: 'rgb(0 128 255) 0px 0px 8px'}:
-              {textShadow: 'rgb(0 0 0) 0px 0px 0px'}}
-              >DOWN</span>
-            <input
-              type="checkbox"
-              checked={status.down}
-              onChange={() => handleToggle('down')}
-              disabled={status.up}
-            />
-            <span className="slider"></span>
-          </label>
-        </div>
-      </div>
-      <div className="home-container" ref={showHomeRef}>
+      {/* Removed manual-controls div - now in Settings.js */}
+      {mode === 'home' ? (
+        <div className="home-container" ref={showHomeRef}>
         
-        <table className='level-selector'>
-          <tbody>
-            <tr className='level-wrapper'>
-              <td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2} /></td>
-              <td><label className='level-label' ref={labelFloor2} htmlFor='lvl2' style={position.includes('2') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>2</label></td>
-            </tr>
-            <tr className='level-wrapper'>
-              <td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1} /></td>
-              <td><label className='level-label' ref={labelFloor1} htmlFor='lvl1' style={position.includes('1') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>1</label></td>
-            </tr>
-            <tr className='level-wrapper'>
-              <td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG} /></td>
-              <td><label className='level-label' ref={labelFloorG} htmlFor='lvlG' style={position.includes('G') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>G</label></td>
-            </tr>
-            <tr className='level-wrapper'>
-              <td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB} /></td>
-              <td><label className='level-label' ref={labelFloorB} htmlFor='lvlB' style={position.includes('B') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>B</label></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+          <table className='level-selector'>
+            <tbody>
+              <tr className='level-wrapper'>
+                <td><input id='lvl2' type="button" className='level-radio' onClick={goToFloor2} ref={btnFloor2} /></td>
+                <td><label className='level-label' ref={labelFloor2} htmlFor='lvl2' style={position.includes('2') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>2</label></td>
+              </tr>
+              <tr className='level-wrapper'>
+                <td><input id='lvl1' type="button" className='level-radio' onClick={goToFloor1} ref={btnFloor1} /></td>
+                <td><label className='level-label' ref={labelFloor1} htmlFor='lvl1' style={position.includes('1') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>1</label></td>
+              </tr>
+              <tr className='level-wrapper'>
+                <td><input id='lvlG' type="button" className='level-radio' onClick={goToFloorG} ref={btnFloorG} /></td>
+                <td><label className='level-label' ref={labelFloorG} htmlFor='lvlG' style={position.includes('G') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>G</label></td>
+              </tr>
+              <tr className='level-wrapper'>
+                <td><input id='lvlB' type="button" className='level-radio' onClick={goToFloorB} ref={btnFloorB} /></td>
+                <td><label className='level-label' ref={labelFloorB} htmlFor='lvlB' style={position.includes('B') ? { fontWeight: 'bold', color: '#2196f3', fontSize: '3.5rem', textShadow: '0 0 15px rgba(160,240,255,0.95)' } : { fontWeight: 'bold', color: '#000', fontSize: '3.5rem', textShadow: '0 0 5px rgba(33,150,243,0)' }}>B</label></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Settings 
+          settings={settingsState} 
+          onUpdate={setSettingsState} 
+          targetLevel={status.targetLevel || null} 
+          position={position}
+        />
+      )}
       <div className='nav-wrapper'>
         <button className='stop-btn' onClick={stopLift}>
           <StopImg />

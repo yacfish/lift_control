@@ -45,13 +45,6 @@
   margin-top: 10px;
 }
 
-.toggle-container {
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex-grow: 1;
-}
 
 .home-container {
   display: flex;
@@ -59,13 +52,14 @@
   align-items: center;
   justify-content: center;
   flex-grow: 1;
+  margin-bottom: 70px;
 }
 
 .toggle {
   position: relative;
-  display: inline-block;
-  width: 0;
-  height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
 }
 
 .toggle input {
@@ -75,17 +69,12 @@
 }
 
 .slider {
-  position: absolute;
   cursor: pointer;
-  top: 0;
-  left: -150px;
-  right: 0;
-  bottom: 0;
   background-color: #ccc;
-  transition: .4s;
   border-radius: 50px;
   height: 100px;
   width: 130px;
+  order: -1;
 }
 
 .slider:before {
@@ -96,7 +85,6 @@
   left: 4px;
   bottom: 4px;
   background-color: white;
-  transition: .5s;
   border-radius: 50%;
 }
 
@@ -121,7 +109,7 @@ input:disabled + .slider {
   margin-left: -5px;
   margin-top: 0;
   line-height: 100px;
-  font-size: 3rem;
+  font-size: 2.5rem;
   font-weight: 700;
   font-family: '3Dumb', Arial, serif;
   text-shadow: rgb(0 108 255) 0px 0px 10px;
@@ -133,20 +121,28 @@ input:disabled + .slider {
 
 .error {
   color: red;
-  margin-top: 10px;
+  margin-top: 0px;
   position: absolute;
-  top: 80px;
+  top: 60px;
   left: 5%;
+  right: 5%;
+  font-size: 1.2rem;
+  font-family: '2Dumb', Arial, serif;
 }
 .home-wrapper {
   margin-top: auto;
 }
 .nav-wrapper {
-  margin: 0 15px 15px 15px;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
   display: flex;
-  flex-direction: row;
   justify-content: space-between;
   align-items: center;
+  background-color: transparent;
+  padding: 10px;
+  box-sizing: border-box;
 }
 .stop-btn {
   background-color: #fff0;
@@ -203,4 +199,195 @@ input:disabled + .slider {
 }
 @media (max-height: 500px) {
 
+}
+
+
+
+
+
+/* LiftControl.css (Add new styles for settings) */
+/* Existing styles... */
+
+/* Settings container */
+.settings-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+}
+
+/* Panel navigation */
+.panel-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 40px 0 10px 0;
+}
+
+.nav-arrow {
+  background: transparent;
+  color: #8b8b8b;
+  border: none;
+  font-size: 2.5rem;
+  padding: 30px 20px;
+  cursor: pointer;
+  margin-top: 20px;
+  font-family: '2Dumb', Arial, serif;
+  margin: 0;
+}
+
+.nav-arrow:hover {
+background: transparent;
+}
+
+/* Ensure toggle visibility */
+.toggle-container {
+  display: flex !important; /* Override any 'none' if present */
+  flex-direction: row;
+  align-items: center;
+}
+.panel-name {
+  color: #5f5f5f;
+  font-size: 2.5rem;
+  font-weight: bold;
+  font-family: '2Dumb', Arial, serif;
+  margin: 0;
+}
+
+/* Ensure toggle visibility */
+.toggle-container {
+  display: flex !important; /* Override any 'none' if present */
+  flex-direction: row;
+  align-items: center;
+}
+
+/* Toggle labels and sliders (enhance visibility if needed) */
+.toggle-label {
+  font-size: 2.5rem;
+  font-weight: bold;
+  /* text-shadow: rgb(0 108 255) 0px 0px 10px; */
+  font-family: '3Dumb', Arial, serif;
+  margin-left: 20px;
+}
+/* Toggle labels and sliders (enhance visibility if needed) */
+.toggle-label-small {
+  font-size: 2rem;
+  font-weight: bold;
+  /* text-shadow: rgb(0 108 255) 0px 0px 10px; */
+  font-family: '3Dumb', Arial, serif;
+  margin-left: 20px;
+}
+/* Blue shadow only when toggle is checked */
+.toggle:has(input:checked) .toggle-label {
+  text-shadow: rgb(0 108 255) 0px 0px 10px;
+}
+/* Panel wrapper for all panels to fill space */
+.panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  flex-grow: 1;
+  justify-content: center;
+}
+
+/* Settings container fill */
+.settings-container {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin-bottom: 150px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: 20px;
+  flex-grow: 1;
+  justify-content: center;
+}
+
+.manual-controls {
+  display: flex;
+  flex-direction: column; /* Original was column for up/down */
+  align-items: start;
+  justify-content: center;
+  gap: 30px; /* Spacing between up/down */
+  flex-grow: 1; /* Expand to fill space */
+  min-height: 150px; /* Ensure minimum size to avoid 0x0 */
+}
+
+/* Gray out disabled manual toggles */
+.manual-controls .toggle input:disabled + .slider {
+  background-color: #ccc !important; /* Gray slider */
+  cursor: not-allowed;
+}
+
+.manual-controls .toggle input:disabled ~ .toggle-label {
+  color: #888; /* Dim label */
+  text-shadow: none; /* Remove glow */
+}
+
+/* Gray out disabled toggles in all panels */
+.panel .toggle input:disabled + .slider {
+  background-color: #ccc !important; /* Gray slider */
+  cursor: not-allowed;
+}
+
+.panel .toggle input:disabled ~ .toggle-label {
+  color: #888; /* Dim label */
+  text-shadow: none; /* Remove glow */
+}
+
+/* Style for timeout input to match toggle aesthetics */
+.toggle-container input[type="text"] {
+  margin: 0;
+  font-size: 3rem;
+  font-family: '3Dumb', Arial, serif;
+  border-radius: 50px;
+  padding: 0 10px;
+  width: 106px;
+  height: 96px;
+  text-align: center;
+  border: 2px solid #ccc;
+  background-color: #f6f6f6;
+}
+
+.toggle-container input[type="text"]:focus {
+  border-color: #2196F3;
+  box-shadow: 0 0 1px #2196F3;
+}
+
+/* Styles for open/lock all buttons */
+.action-button {
+  width: 100%;
+  font-size: 2.2rem;
+  font-family: '2Dumb', Arial, serif;
+  font-weight: 700;
+  border-radius: 50px;
+  padding: 30px 0 20px 0;
+  margin: 0;
+  cursor: pointer;
+  border: none;
+  color: #f6f6f6;
+  text-align: center;
+}
+
+.action-button:disabled {
+  cursor: not-allowed;
+}
+
+.action-button:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.transitions-enabled .slider {
+  transition: .4s;
+}
+
+.transitions-enabled .slider:before {
+  transition: .5s;
 }
