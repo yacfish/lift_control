@@ -24,6 +24,15 @@ const positionTolerance = 0.05; // 1cm tolerance for "LIFT HERE"
 let liftOverShot = null;
 let lastDir = null;
 let initiatedByButton = false;
+
+// Motion safety settings (override with env vars of the same name)
+const LEVEL_HEIGHT_M = 3; // distance between two levels, matches levelPositions
+const SECONDS_PER_LEVEL = Number(process.env.SECONDS_PER_LEVEL) || 20; // max travel time for one level
+const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 10; // extra time added to every move
+const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
+const REVERSAL_DEAD_TIME_MS = Number(process.env.REVERSAL_DEAD_TIME_MS) || 300; // pause before reversing direction
+let travelTimeoutId = null;
+let moveSeq = 0; // bumped on every new move or stop, cancels pending door lock waits
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 // const https = require('https');
@@ -121,10 +130,102 @@ function setLight(state) {
   }
 }
 
+function clearTravelTimeout() {
+  clearTimeout(travelTimeoutId);
+  travelTimeoutId = null;
+}
+
+// Safety cutoff: stop the motor if the move takes longer than expected
+function startTravelTimeout(levels) {
+  clearTravelTimeout();
+  const n = (isFinite(levels) && levels > 0) ? Math.ceil(levels) : listOfLevels.length - 1;
+  const ms = (n * SECONDS_PER_LEVEL + TRAVEL_MARGIN_S) * 1000;
+  travelTimeoutId = setTimeout(() => {
+    travelTimeoutId = null;
+    stopMotion(`Travel timeout (${ms / 1000}s), lift stopped`);
+  }, ms);
+}
+
+function isMotorOn() {
+  return relayUp.readSync() === 1 || relayDown.readSync() === 1;
+}
+
+function isMoveActive() {
+  return isMotorOn() || liftState === 'Locking doors';
+}
+
+// Stop the motor and reset move state, with a message for the display
+function stopMotion(reason) {
+  moveSeq++;
+  clearTravelTimeout();
+  relayUp.writeSync(0);
+  relayDown.writeSync(0);
+  if (mockLiftMode) mockLiftUpdate(false);
+  liftState = 'Idle';
+  initiatedByButton = false;
+  manual = false;
+  targetLevel = null;
+  settings.manual.upEnabled = false;
+  settings.manual.downEnabled = false;
+  console.error(newDateStr(), 'STOP:', reason);
+  displayMessage = reason;
+  clearTimeout(clearDisplayMessageTimeout);
+  clearDisplayMessageTimeout = setTimeout(() => {
+    displayMessage = liftState;
+  }, 5000);
+}
+
+function sendToLevel(levelLabel, cmd) {
+  const level = levelPack[levelLabel];
+  if (!level || !level.port) return;
+  level.port.write(cmd + '\r\n', (err) => {
+    if (err) return console.error(newDateStr(), `Error writing ${cmd} to ${levelLabel}:`, err.message);
+    console.log(newDateStr(), `message sent to ${levelLabel} (${level.port.settings ? level.port.settings.path : 'Mock'}) : ${cmd}`);
+  });
+}
+
+// Abort a move that could not start: stop, and unlock the door where the lift stands
+function abortMove(reason) {
+  stopMotion(reason);
+  if (listOfLevels.includes(currentPosition)) sendToLevel(currentPosition, 'UNLOCK_DOOR');
+}
+
+// Send LOCK_DOOR to every connected level and call onLocked once all report DOOR LOCKED
+function lockAllDoorsThen(seq, onLocked, onFail) {
+  if (mockLiftMode) return onLocked();
+  const connected = Object.keys(levelPack).filter(l => levelPack[l].port && levelPack[l].port.isOpen);
+  if (connected.length === 0) return onFail('No level module connected, move refused');
+  connected.forEach(l => {
+    levelPack[l].state.doorLocked = false; // wait for a fresh confirmation
+    sendToLevel(l, 'LOCK_DOOR');
+  });
+  const start = Date.now();
+  const poll = setInterval(() => {
+    if (seq !== moveSeq) return clearInterval(poll); // move cancelled or replaced
+    if (connected.every(l => levelPack[l].state.doorLocked)) {
+      clearInterval(poll);
+      onLocked();
+    } else if (Date.now() - start > DOOR_LOCK_TIMEOUT_MS) {
+      clearInterval(poll);
+      const notLocked = connected.filter(l => !levelPack[l].state.doorLocked);
+      onFail(`Door not locked at level ${notLocked.join(', ')}, move aborted`);
+    }
+  }, 50);
+}
+
 // Function to parse serial data and determine the level
 function parseLevelData(data, port=null) {
   const parts = data.split(' : ');
   const levelLabel = parts[0];
+  // Keep levelPack pointing at the port this level currently talks on (fixes stale port after reconnect)
+  if (port && listOfLevels.includes(levelLabel)) {
+    if (!levelPack[levelLabel]) {
+      levelPack[levelLabel] = { port, state: { presence: null, doorClosed: true, doorLocked: false } };
+    } else if (levelPack[levelLabel].port !== port) {
+      console.log(newDateStr(), `level ${levelLabel} now on port ${port.settings.path}`);
+      levelPack[levelLabel].port = port;
+    }
+  }
   if (parts.length === 2) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
@@ -158,6 +259,8 @@ function parseLevelData(data, port=null) {
         } else console.log(newDateStr(),
           `PRESENCE SENSOR TRIGGERED > Lift stopped at limit: ${currentLevel}`
         );
+        moveSeq++;
+        clearTravelTimeout();
         relayUp.writeSync(0);
         relayDown.writeSync(0);
         if (manual) {
@@ -201,6 +304,8 @@ function parseLevelData(data, port=null) {
       }
     } else if (message === 'DOOR OPEN') {
       levelPack[levelLabel].state.doorClosed = false;
+      if (liftState === 'Locking doors') abortMove(`Door open at level ${levelLabel}, move aborted`);
+      else if (isMotorOn()) stopMotion(`Door open at level ${levelLabel}, lift stopped`);
       if (settings.light.auto) {
         // setLight(1);
       }
@@ -231,6 +336,15 @@ function parseLevelData(data, port=null) {
       console.log(newDateStr(), `Unknown message from ${levelLabel}: ${message}`);
     }
   } else if (parts.length === 3){
+    if (parts[1] === 'ALERT' && parts[2] === 'DOOR OPEN WHILE LOCKED') {
+      console.error(newDateStr(), `ALERT from level ${levelLabel}: DOOR OPEN WHILE LOCKED`);
+      if (levelPack[levelLabel]) {
+        levelPack[levelLabel].state.doorClosed = false;
+        levelPack[levelLabel].state.doorLocked = false;
+      }
+      if (liftState === 'Locking doors') abortMove(`Door forced open at level ${levelLabel}, move aborted`);
+      else if (isMotorOn()) stopMotion(`Door forced open at level ${levelLabel}, lift stopped`);
+    }
     // console.log('parts == 3')
     // console.log(parts)
     
@@ -363,6 +477,7 @@ function openSerialPort(path, index, isInitial = false) {
   port.on('close', () => {
     const dateTimeStr = newDateStr();
     console.error(`${dateTimeStr} Serial port closed for ${path} (backoff will be ${retryBackoffs[index]/1000}s)`);
+    if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
     // Clear any existing timeout first
     if (retryTimeouts[index]) {
       clearTimeout(retryTimeouts[index]);
@@ -676,19 +791,6 @@ function mockLiftUpdate(state, direction){
   }
 }
 function goToFloor(newTargetLevel){
-  if (listOfLevels.includes(currentLevel)){
-    try {
-      if (levelPack[currentLevel]) {
-        const level = levelPack[currentLevel];
-        level.port.write('LOCK_DOOR\r\n',function(err){
-          if (err) {return console.error("error on write", err.message)}
-          console.log(newDateStr(),"message sent to "+ currentLevel + " (" + (level && level.port && level.port.settings ? level.port.settings.path : 'Mock') + ") : LOCK_DOOR")
-        })
-      }
-    } catch (error) {
-      console.error(newDateStr(), 'Error locking door for current level:', error);
-    }
-  }
   targetLevel = newTargetLevel;
   displayMessage = `Level ${newTargetLevel} Requested`;
   clearTimeout(clearDisplayMessageTimeout);
@@ -719,24 +821,31 @@ function goToFloor(newTargetLevel){
     const desiredDirection = heightDiff > 0 ? 1 : 0; // 1 = up , 0 = down
 
     // Safely switch relays: turn off both first to avoid overlap
+    clearTravelTimeout();
     relayUp.writeSync(0);
     relayDown.writeSync(0);
-
-    // Control virtual lift (mock mode)
-    if (mockLiftMode) {
-      mockLiftUpdate(true, desiredDirection);
-      console.log(newDateStr(),
-        `Controlling virtual lift (mock mode): direction=${
-          desiredDirection ? 'up' : 'down'
-        }, state=${true}`
-      );
-    }
-    lastDir=desiredDirection
-    relayUp.writeSync(desiredDirection);
-    relayDown.writeSync(1 - desiredDirection);
-    liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
     manual = false;
-    if (settings.light.auto) setLight(1);
+    liftState = 'Locking doors';
+    const seq = ++moveSeq;
+
+    // Only start the motor once every connected level confirms DOOR LOCKED
+    lockAllDoorsThen(seq, () => {
+      // Control virtual lift (mock mode)
+      if (mockLiftMode) {
+        mockLiftUpdate(true, desiredDirection);
+        console.log(newDateStr(),
+          `Controlling virtual lift (mock mode): direction=${
+            desiredDirection ? 'up' : 'down'
+          }, state=${true}`
+        );
+      }
+      lastDir=desiredDirection
+      relayUp.writeSync(desiredDirection);
+      relayDown.writeSync(1 - desiredDirection);
+      liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
+      startTravelTimeout(Math.abs(heightDiff) / LEVEL_HEIGHT_M);
+      if (settings.light.auto) setLight(1);
+    }, abortMove);
   } else targetLevel = null;
 }
 app.post('/floor', verifyToken, (req, res) => {
@@ -771,6 +880,8 @@ app.post('/stop', verifyToken, (req, res) => {
     mockLiftUpdate(false, direction);
     console.log(newDateStr(),'Controlling virtual lift (mock mode): STOP');
   }
+  moveSeq++;
+  clearTravelTimeout();
   relayUp.writeSync(0);
   relayDown.writeSync(0);
   liftState = 'Idle';
@@ -816,35 +927,53 @@ function manualControl(direction, state) {
   if (direction === 'up' && currentPosition === '2') state = false;
   else if (direction === 'down' && currentPosition === 'B') state = false;
 
-  if (mockLiftMode) {
-    // Control virtual lift (mock mode)
-    mockLiftUpdate(state, direction === 'up' ? 1 : 0);
-    console.log(newDateStr(),
-      `Controlling virtual lift (mock mode): direction=${direction}, state=${state}`
-    );
+  if (direction !== 'up' && direction !== 'down') {
+    console.error(newDateStr(), 'Invalid direction in manualControl');
+    return;
   }
 
-  // Control the real relays whether serial ports are available or not
   try {
-    if (direction === 'up') {
-      lastDir = 1;
-      relayUp.writeSync(state ? 1 : 0);
-      if (state) relayDown.writeSync(0);
-    } else if (direction === 'down') {
-      lastDir = 0;
-      relayDown.writeSync(state ? 1 : 0);
-      if (state) relayUp.writeSync(0);
-    } else {
-      console.error(newDateStr(), 'Invalid direction in manualControl');
-      return;
-    }
-    manual = true;
-    
     if (state) {
-      liftState = (direction === 'up') ? 'Manual UP' : 'Manual DOWN';
-      displayMessage = liftState;
-      if (settings.light.auto) setLight(1);
+      // Always switch both directions off first, then the new one on, so the shared GPIO 24 ends up high
+      const opposite = direction === 'up' ? relayDown : relayUp;
+      const reversing = opposite.readSync() === 1;
+      const seq = ++moveSeq;
+      clearTravelTimeout();
+      relayUp.writeSync(0);
+      relayDown.writeSync(0);
+      if (mockLiftMode) mockLiftUpdate(false);
+      manual = true;
+      liftState = 'Locking doors';
+      setTimeout(() => {
+        if (seq !== moveSeq) return; // cancelled meanwhile
+        lockAllDoorsThen(seq, () => {
+          if (mockLiftMode) {
+            mockLiftUpdate(true, direction === 'up' ? 1 : 0);
+            console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=true`);
+          }
+          lastDir = direction === 'up' ? 1 : 0;
+          (direction === 'up' ? relayUp : relayDown).writeSync(1);
+          liftState = (direction === 'up') ? 'Manual UP' : 'Manual DOWN';
+          displayMessage = liftState;
+          // Max travel = distance to the end of the shaft in that direction
+          let numPosition;
+          if (currentPosition.includes('-')) numPosition = levelPositions[currentPosition.split(' - ')[0]] + LEVEL_HEIGHT_M / 2;
+          else numPosition = levelPositions[currentPosition];
+          const endPosition = direction === 'up' ? levelPositions['2'] : levelPositions['B'];
+          startTravelTimeout(Math.abs(endPosition - numPosition) / LEVEL_HEIGHT_M);
+          if (settings.light.auto) setLight(1);
+        }, abortMove);
+      }, reversing ? REVERSAL_DEAD_TIME_MS : 0);
     } else {
+      moveSeq++;
+      clearTravelTimeout();
+      if (mockLiftMode) {
+        mockLiftUpdate(false, direction === 'up' ? 1 : 0);
+        console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=false`);
+      }
+      lastDir = direction === 'up' ? 1 : 0;
+      (direction === 'up' ? relayUp : relayDown).writeSync(0);
+      manual = true;
       liftState = 'Idle';
       displayMessage = 'Manual STOP';
       clearTimeout(clearDisplayMessageTimeout);
