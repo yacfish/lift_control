@@ -9,6 +9,7 @@
   background-position: top center;
   min-height: 100dvh;
   width: 100%;
+  flex-shrink: 0;
 }
 
 .menu-bar {
@@ -119,15 +120,40 @@ input:disabled + .slider {
   background-color: #c82333;
 }
 
-.error {
-  color: red;
-  margin-top: 0px;
+/* Overlay just under the title: red error text and banners stack here without moving the page */
+.top-alerts {
   position: absolute;
   top: 60px;
   left: 5%;
   right: 5%;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+.error {
+  color: red;
+  margin-top: 0px;
   font-size: 1.2rem;
   font-family: '2Dumb', Arial, serif;
+  overflow-wrap: anywhere;
+}
+.banner {
+  font-weight: bold;
+  text-align: center;
+  padding: 0.4em;
+  border-radius: 0.5em;
+  overflow-wrap: anywhere;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.maintenance-banner {
+  background: #f90;
+  color: #000;
+}
+.fault-banner {
+  background: #d00;
+  color: #fff;
 }
 .home-wrapper {
   margin-top: auto;
@@ -390,4 +416,25 @@ background: transparent;
 
 .transitions-enabled .slider:before {
   transition: .5s;
+}
+/* Keep settings inside the screen width on phones: long labels and notes wrap instead of overflowing */
+.settings-container,
+.panel {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+.toggle .slider {
+  flex-shrink: 0;
+}
+.toggle-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.toggle-note {
+  max-width: 100%;
+  font-size: 1.1rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  margin-top: -10px;
 }

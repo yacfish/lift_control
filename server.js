@@ -36,7 +36,7 @@ const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 3; // hard travel
 // A board is "silent" when no line came from it for this long. Firmware heartbeat is 5 s today, so keep > 5 s until it is lowered
 const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 6000;
 const FAULT_CLEAR_MS = Number(process.env.FAULT_CLEAR_MS) || 10000; // silent board must be healthy this long before trips are allowed again
-const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 15;
+const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 10;
 const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
 const REVERSAL_DEAD_TIME_MS = Number(process.env.REVERSAL_DEAD_TIME_MS) || 300; // pause before reversing direction
 let travelTimeoutId = null;
@@ -56,7 +56,7 @@ const settings = {
   light: { auto: true, timeout: 60, currentState: false },
   callButton: { enabled: true },
   manual: { upEnabled: false, downEnabled: false },
-  maintenance: { enabled: false, until: null } // door alerts / lock checks ignored, manual moves only
+  maintenance: { enabled: false, until: null } // "Ignore sensors": door alerts / lock checks ignored, floor detection and stops unchanged
 };
 
 class GpioRelayGroup {
@@ -188,6 +188,29 @@ function currentPositionM(targetM) {
     return Math.abs(a - targetM) > Math.abs(b - targetM) ? a : b;
   }
   return levelPositions[currentPosition];
+}
+
+// Gap label when the lift leaves levelLabel going up (dir 1) or down (dir 0), e.g. 'B - G'.
+// Built from the level that lost the line, never from currentLevel (unknown right after a restart)
+function gapFrom(levelLabel, dir) {
+  const i = listOfLevels.indexOf(levelLabel);
+  const next = listOfLevels[dir ? i + 1 : i - 1];
+  if (i < 0 || !next) return levelLabel; // end of the shaft: stay at the end level
+  return dir ? `${levelLabel} - ${next}` : `${next} - ${levelLabel}`;
+}
+
+// Start point (meters) for a floor trip's travel limit, worst case so the limit is never too short.
+// At a level: that level. Otherwise (between floors after a manual move or an overshoot): the farthest of the
+// gap ends and the last confirmed level and its neighbours (the lift is never more than one gap away from it).
+// Nothing known: the end of the shaft farthest from the target (full shaft time).
+function tripStartM(targetM) {
+  if (levelPositions.hasOwnProperty(currentPosition)) return levelPositions[currentPosition];
+  const cands = [];
+  if (currentPosition.includes(' - ')) currentPosition.split(' - ').forEach(l => { if (levelPositions.hasOwnProperty(l)) cands.push(l); });
+  const i = listOfLevels.indexOf(currentLevel);
+  if (i >= 0) [i - 1, i, i + 1].forEach(k => { if (listOfLevels[k]) cands.push(listOfLevels[k]); });
+  if (!cands.length) cands.push(listOfLevels[0], listOfLevels[listOfLevels.length - 1]);
+  return cands.map(l => levelPositions[l]).reduce((best, m) => (expectedTravelMs(m, targetM) > expectedTravelMs(best, targetM) ? m : best));
 }
 
 // Safety cutoff: stop the motor if the move takes longer than expected (ms = expected travel time)
@@ -422,16 +445,8 @@ function parseLevelData(data, port=null) {
     } else if (message === 'LIFT AWAY') {
       levelPack[levelLabel].state.presence = null;
       console.log(newDateStr(),`PRESENCE SENSOR TRIGGERED > Lift left level ${levelLabel}`);
-      if (relayUp.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(levelLabel) + 1
-        const nextLevel = listOfLevels[nextLevelIdx]
-        currentPosition = `${currentLevel} - ${nextLevel}`
-      }
-      else if (relayDown.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(levelLabel) - 1
-        const nextLevel = listOfLevels[nextLevelIdx]
-        currentPosition = `${nextLevel} - ${currentLevel}`
-      }
+      if (relayUp.readSync()) currentPosition = gapFrom(levelLabel, 1);
+      else if (relayDown.readSync()) currentPosition = gapFrom(levelLabel, 0);
       else {
         console.log(newDateStr(),`LIFT OVERSHOT @ level ${levelLabel} while going ${lastDir?"UP":"DOWN"}`);
         liftOverShot = {levelLabel,lastDir}
@@ -492,7 +507,7 @@ function parseLevelData(data, port=null) {
     } else if (parts[1].startsWith("initial lift_sensor")){
       console.log(newDateStr(),'port', port.settings.path,"identified as level", parts[0])
       const here = parts[2]=='LIFT HERE'
-      if (here) currentPosition = parts[0]
+      if (here) { currentPosition = parts[0]; currentLevel = parts[0]; } // currentLevel too: it is the last confirmed level
       if (!levelPack[parts[0]]) levelPack[parts[0]] = { port, state: { presence: here ? 'LIFT HERE' : null, doorClosed: true, doorLocked: true } };
       else levelPack[parts[0]].state.presence = here ? 'LIFT HERE' : null
     } 
@@ -614,10 +629,15 @@ function openSerialPort(path, index, isInitial = false) {
           fault, maintenance: settings.maintenance, liftState, currentPosition, targetLevel, displayMessage, light: settings.light.currentState ? 1 : 0,
           presence: Object.fromEntries(listOfLevels.map(l => [l, levelPack[l] && levelPack[l].state.presence === 'LIFT HERE']))
         }));
-        currentLevel = 'G';
-        levelPack['G'].state.presence = 'LIFT HERE'; // Set initial presence
-        currentPosition = 'G';
-        updateMockLevelData();
+        // Boot like the real boards: each one reports "initial lift_sensor (pin) : LIFT HERE/AWAY" once.
+        // MOCK_START_LEVEL (default G) sets where the virtual lift starts
+        const startLevel = listOfLevels.includes(process.env.MOCK_START_LEVEL) ? process.env.MOCK_START_LEVEL : 'G';
+        virtualLiftPosition = levelPositions[startLevel];
+        listOfLevels.forEach(level => {
+          const here = level === startLevel ? 'LIFT HERE' : 'LIFT AWAY';
+          mockLevelObject[level] = `${level} : ${here}`;
+          parseLevelData(`${level} : initial lift_sensor (7) : ${here}`, mockBoards[level].port);
+        });
       }
     } else if (runtimeErrorCount >= 2) { // Threshold for runtime errors to trigger mock if persists
       console.warn(newDateStr(), 'High runtime errors; consider mock mode if persists');
@@ -1001,16 +1021,7 @@ function goToFloor(newTargetLevel){
   }, 2000);
   console.log(newDateStr(),`Lift target level updated to: ${targetLevel}`);
   if (liftOverShot){
-    if (liftOverShot.lastDir) {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) + 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${currentLevel} - ${nextLevel}`
-    }
-    else {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) - 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${nextLevel} - ${currentLevel}`
-    }
+    currentPosition = gapFrom(liftOverShot.levelLabel, liftOverShot.lastDir ? 1 : 0);
     liftOverShot=null
   }
   if (currentPosition != targetLevel) {
@@ -1018,15 +1029,25 @@ function goToFloor(newTargetLevel){
     if (currentPosition.includes('-'))
       numPosition = levelPositions[currentPosition.split(' - ')[0]] + 1.5;
     else numPosition = levelPositions[currentPosition];
+    if (!isFinite(numPosition)) numPosition = levelPositions[currentLevel]; // malformed position: last confirmed level
+    if (!isFinite(numPosition)) {
+      console.warn(newDateStr(), `Trip to ${targetLevel} refused: position unknown (${currentPosition})`);
+      displayMessage = 'Position unknown, move manually to a floor first';
+      targetLevel = null;
+      return false;
+    }
     // console.log('numPosition : ', numPosition);
     const heightDiff = levelPositions[targetLevel] - numPosition;
     const desiredDirection = heightDiff > 0 ? 1 : 0; // 1 = up , 0 = down
 
     // Safely switch relays: turn off both first to avoid overlap
     clearTravelTimeout();
+    trip = null; // nothing left over from an earlier move
     relayUp.writeSync(0);
     relayDown.writeSync(0);
     manual = false;
+    settings.manual.upEnabled = false;
+    settings.manual.downEnabled = false;
     liftState = 'Locking doors';
     const seq = ++moveSeq;
 
@@ -1045,7 +1066,9 @@ function goToFloor(newTargetLevel){
       relayUp.writeSync(desiredDirection);
       relayDown.writeSync(1 - desiredDirection);
       liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
-      trip = { seq, dir: desiredDirection, fromM: currentPositionM(levelPositions[targetLevel]), startTime: Date.now(), expectedMs: expectedTravelMs(currentPositionM(levelPositions[targetLevel]), levelPositions[targetLevel]), mode: 'normal' };
+      const fromM = tripStartM(levelPositions[targetLevel]);
+      trip = { seq, dir: desiredDirection, fromM, startTime: Date.now(), expectedMs: expectedTravelMs(fromM, levelPositions[targetLevel]), mode: 'normal' };
+      console.log(newDateStr(), `Trip ${currentPosition} -> ${targetLevel}: travel limit ${Math.round((trip.expectedMs + TRAVEL_MARGIN_S * 1000) / 1000)}s`);
       if (settings.light.auto) setLight(1);
     }, abortMove);
   } else targetLevel = null;
@@ -1053,7 +1076,6 @@ function goToFloor(newTargetLevel){
 }
 
 function tripBlockedReason() {
-  if (settings.maintenance.enabled) return 'Maintenance mode: manual moves only';
   if (fault) return `Fault: level ${fault.levels.join(', ')} not responding, trips blocked`;
   return null;
 }
@@ -1064,6 +1086,9 @@ app.post('/floor', verifyToken, (req, res) => {
     const blocked = tripBlockedReason();
     if (blocked) {
       console.log(newDateStr(), `Floor request ${level} refused: ${blocked}`);
+      displayMessage = blocked; // show the reason next to STOP, not only in the HTTP error
+      clearTimeout(clearDisplayMessageTimeout);
+      clearDisplayMessageTimeout = setTimeout(() => { displayMessage = liftState; }, 5000);
       res.status(423).json({ error: blocked });
     } else if (liftState === 'Idle') {
       goToFloor(level)
@@ -1116,16 +1141,7 @@ app.post('/stop', verifyToken, (req, res) => {
 
 function manualControl(direction, state) {
   if (liftOverShot){
-    if (liftOverShot.lastDir) {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) + 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${currentLevel} - ${nextLevel}`
-    }
-    else {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) - 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${nextLevel} - ${currentLevel}`
-    }
+    currentPosition = gapFrom(liftOverShot.levelLabel, liftOverShot.lastDir ? 1 : 0);
     liftOverShot=null
   }
 
@@ -1152,6 +1168,7 @@ function manualControl(direction, state) {
       const reversing = opposite.readSync() === 1;
       const seq = ++moveSeq;
       clearTravelTimeout();
+      trip = null; // a manual move never runs under, or leaves behind, a floor trip's travel limit
       relayUp.writeSync(0);
       relayDown.writeSync(0);
       if (mockLiftMode) mockLiftUpdate(false);
@@ -1178,6 +1195,7 @@ function manualControl(direction, state) {
     } else {
       moveSeq++;
       clearTravelTimeout();
+      trip = null;
       if (mockLiftMode) {
         mockLiftUpdate(false, direction === 'up' ? 1 : 0);
         console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=false`);

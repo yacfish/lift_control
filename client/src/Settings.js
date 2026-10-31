@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from './App';
 
-const panelNames = ['Manual', 'Light', 'Doors', 'Call Buttons', 'Maintenance']; // Order: Manual (1), Light (2), Doors (3), Call Button (4)
+const panelNames = ['Manual', 'Light', 'Doors', 'Call Buttons']; // Order: Manual (1), Light (2), Doors (3), Call Button (4)
 function Settings({ settings, onUpdate, targetLevel, position }) { 
   const [currentPanelIndex, setCurrentPanelIndex] = useState(0);
   const [panelMounted, setPanelMounted] = useState(false);
@@ -102,6 +102,7 @@ function Settings({ settings, onUpdate, targetLevel, position }) {
       case 'Doors': {
         const { auto } = settings.doors;
         const { allOpen, allLocked } = settings.doorStatuses || {}; // From status
+        const m = settings.maintenance || { enabled: false, until: null }; // "Ignore sensors" = maintenance mode on the server
         return (
           <div className={`panel doors ${panelMounted ? 'transitions-enabled' : ''}`}>
             <div className="toggle-container">
@@ -127,6 +128,17 @@ function Settings({ settings, onUpdate, targetLevel, position }) {
             >
               LOCK ALL
             </button>
+            <div className="toggle-container">
+              <label className="toggle">
+                <span className="toggle-label">Ignore sensors</span>
+                <input type="checkbox" checked={m.enabled} onChange={(e) => handleValueChange('maintenance', 'enabled', e.target.checked)} />
+                <span className="slider"></span>
+              </label>
+            </div>
+            <div className="toggle-note">
+              Ignores door-open alerts and lock checks.
+              {m.enabled && m.until ? ` Auto-off at ${new Date(m.until).toLocaleTimeString()}.` : ' Auto-off after 10 min.'}
+            </div>
           </div>
         );
       }
@@ -140,24 +152,6 @@ function Settings({ settings, onUpdate, targetLevel, position }) {
                 <input type="checkbox" checked={enabled} onChange={(e) => handleValueChange('call-buttons', 'enable', e.target.checked)} />
                 <span className="slider"></span>
               </label>
-            </div>
-          </div>
-        );
-      }
-      case 'Maintenance': {
-        const m = settings.maintenance || { enabled: false, until: null };
-        return (
-          <div className={`panel maintenance ${panelMounted ? 'transitions-enabled' : ''}`}>
-            <div className="toggle-container">
-              <label className="toggle">
-                <span className="toggle-label">MAINTENANCE</span>
-                <input type="checkbox" checked={m.enabled} onChange={(e) => handleValueChange('maintenance', 'enabled', e.target.checked)} />
-                <span className="slider"></span>
-              </label>
-            </div>
-            <div style={{ fontSize: '0.9rem', marginTop: '0.5em' }}>
-              Ignores door-open alerts and lock checks. Manual up/down only, floor calls refused.
-              {m.enabled && m.until ? ` Auto-off at ${new Date(m.until).toLocaleTimeString()}.` : ' Auto-off after 15 min.'}
             </div>
           </div>
         );

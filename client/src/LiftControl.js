@@ -220,7 +220,21 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
 
   return (
     <div className="lift-control" ref={containerRef}> {/* Reverted class to "lift-control" */}
-      {error && <div className="error">{error}</div>} {/* Reverted class to "error" */}
+      {/* Alerts under the title, as an overlay that does not push the page down. Stacked: red error text first, then banners */}
+      <div className="top-alerts">
+        {error && <div className="error">{error}</div>} {/* Reverted class to "error" */}
+        {settingsState.maintenance && settingsState.maintenance.enabled && (
+          <div className='banner maintenance-banner'>
+            IGNORE SENSORS ON - door alerts and lock checks off
+            {settingsState.maintenance.until ? ` (until ${new Date(settingsState.maintenance.until).toLocaleTimeString()})` : ''}
+          </div>
+        )}
+        {status.fault && (
+          <div className='banner fault-banner'>
+            FAULT: {status.fault.reason} - floor calls blocked until the board is back
+          </div>
+        )}
+      </div>
       <div className="menu-bar"> {/* Added back menu-bar */}
         <h1>LIFT CONTROL</h1>
         {!authDisabled && ( // FIXED: Hide logout if auth disabled
@@ -259,17 +273,6 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
           targetLevel={status.targetLevel || null} 
           position={position}
         />
-      )}
-      {settingsState.maintenance && settingsState.maintenance.enabled && (
-        <div className='banner maintenance-banner' style={{ background: '#f90', color: '#000', fontWeight: 'bold', textAlign: 'center', padding: '0.4em' }}>
-          MAINTENANCE MODE - door alerts ignored, manual moves only
-          {settingsState.maintenance.until ? ` (until ${new Date(settingsState.maintenance.until).toLocaleTimeString()})` : ''}
-        </div>
-      )}
-      {status.fault && (
-        <div className='banner fault-banner' style={{ background: '#d00', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '0.4em' }}>
-          FAULT: {status.fault.reason} - floor calls blocked until the board is back
-        </div>
       )}
       <div className='nav-wrapper'>
         <button className='stop-btn' onClick={stopLift}>
