@@ -39,6 +39,12 @@ const FAULT_CLEAR_MS = Number(process.env.FAULT_CLEAR_MS) || 10000; // silent bo
 const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 15;
 const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
 const REVERSAL_DEAD_TIME_MS = Number(process.env.REVERSAL_DEAD_TIME_MS) || 300; // pause before reversing direction
+const DOOR_ALERT_MS = Number(process.env.DOOR_ALERT_MS) || 10000; // how long a door problem stays on the display
+// Overshoot: the lift has no deceleration and coasts past the thin floor line after stopping. A line-lost from the
+// floor where the lift stopped, within this window of the stop (before or after), is ignored: the lift stays at that floor
+const OVERSHOOT_IGNORE_MS = Number(process.env.OVERSHOOT_IGNORE_MS) || 500;
+// Mock mode only: virtual lift coasts this far (m) this long after each stop, 0 = off. Toggle from the mock panel
+let mockOvershoot = { m: Number(process.env.MOCK_OVERSHOOT_M) || 0.1, delayMs: Number(process.env.MOCK_OVERSHOOT_DELAY_MS) || 200 };
 let travelTimeoutId = null;
 let moveSeq = 0; // bumped on every new move or stop, cancels pending door lock waits
 const jwt = require('jsonwebtoken');
@@ -129,6 +135,87 @@ let displayMessage = 'Idle';
 let liftState = 'Idle';
 let manual = false;
 let clearDisplayMessageTimeout;
+
+// ---- Last known position, kept across reboots ----
+// File next to server.js: { floor, viaOvershoot, overshotDir, stale, time }. Written (temp file + rename) when the lift
+// is confirmed at a floor, marked stale when a move starts. Loaded at startup only if not stale; a board reporting
+// LIFT HERE at startup always wins. Mock mode uses its own file so it never touches the real one.
+const positionFile = () => path.join(__dirname, mockLiftMode ? 'last_position.mock.json' : 'last_position.json');
+let savedPosition = null; // last content written or loaded
+
+function savePosition(fields) {
+  savedPosition = { ...(savedPosition || {}), ...fields, time: new Date().toISOString() };
+  const file = positionFile();
+  try {
+    fs.writeFileSync(file + '.tmp', JSON.stringify(savedPosition));
+    fs.renameSync(file + '.tmp', file);
+  } catch (err) {
+    console.error(newDateStr(), `Could not save position to ${file}:`, err.message);
+  }
+}
+
+// Lift confirmed at a floor (arrival, stop at a floor, or overshoot ignored)
+function savePositionAtFloor(floor, viaOvershoot = false) {
+  if (listOfLevels.includes(floor)) savePosition({ floor, viaOvershoot, overshotDir: null, stale: false });
+}
+
+function loadPosition() {
+  const file = positionFile();
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    savedPosition = data;
+    if (data.stale || !listOfLevels.includes(data.floor)) {
+      console.warn(newDateStr(), `Saved position ignored (${data.stale ? 'lift moved after it was saved' : 'invalid'}), position unknown until a floor sensor sees the lift`);
+      return null;
+    }
+    console.log(newDateStr(), `Position restored from ${path.basename(file)}: floor ${data.floor}${data.viaOvershoot ? ' (overshoot ignored, sensor may read LIFT AWAY)' : ''}${data.overshotDir === 0 || data.overshotDir === 1 ? ` (had coasted ${data.overshotDir ? 'up' : 'down'} past the line)` : ''} saved ${data.time}`);
+    currentLevel = data.floor;
+    currentPosition = data.floor;
+    if (data.overshotDir === 0 || data.overshotDir === 1) liftOverShot = { levelLabel: data.floor, lastDir: data.overshotDir };
+    return data;
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(newDateStr(), `Could not read ${file}:`, err.message);
+    return null;
+  }
+}
+
+// ---- Overshoot rule ----
+let lastStop = null;     // { level, time } lift stopped at this floor; cleared when a new move starts
+let lastLineLost = null; // { level, time } line lost while the motor was running; cleared when a new move starts
+
+// Call when a new move is commanded: line-lost messages from now on are handled normally
+function noteMoveStart() {
+  lastStop = null;
+  lastLineLost = null;
+}
+
+// Call when the motor actually starts: the saved floor is no longer trusted until the next confirmed stop
+function noteMotorStart() {
+  if (!savedPosition || !savedPosition.stale) savePosition({ stale: true });
+}
+
+// Lift considered at floor X even though its sensor no longer sees the line
+function keepAtFloor(level, why) {
+  console.log(newDateStr(), `OVERSHOOT IGNORED at level ${level}: ${why}, lift kept at ${level}`);
+  currentLevel = level;
+  currentPosition = level;
+  liftOverShot = null;
+  if (levelPack[level]) levelPack[level].state.presence = 'LIFT HERE';
+  savePositionAtFloor(level, true);
+}
+
+// Call on every stop, BEFORE the relays are switched off
+function noteStop() {
+  if (!isMotorOn()) return;
+  const now = Date.now();
+  const ignored = !!(lastLineLost && now - lastLineLost.time <= OVERSHOOT_IGNORE_MS);
+  if (ignored) keepAtFloor(lastLineLost.level, `line lost ${now - lastLineLost.time} ms before the stop`);
+  lastLineLost = null;
+  if (listOfLevels.includes(currentPosition)) {
+    lastStop = { level: currentPosition, time: now };
+    if (!ignored) savePositionAtFloor(currentPosition);
+  } else lastStop = null;
+}
 
 let lightTimeoutId;
 
@@ -283,9 +370,10 @@ function setMaintenance(enabled, why) {
 }
 
 // Stop the motor and reset move state, with a message for the display
-function stopMotion(reason) {
+function stopMotion(reason, holdMs = 5000) {
   moveSeq++;
   clearTravelTimeout();
+  noteStop();
   relayUp.writeSync(0);
   relayDown.writeSync(0);
   if (mockLiftMode) mockLiftUpdate(false);
@@ -300,7 +388,7 @@ function stopMotion(reason) {
   clearTimeout(clearDisplayMessageTimeout);
   clearDisplayMessageTimeout = setTimeout(() => {
     displayMessage = liftState;
-  }, 5000);
+  }, holdMs);
 }
 
 function sendToLevel(levelLabel, cmd) {
@@ -313,8 +401,8 @@ function sendToLevel(levelLabel, cmd) {
 }
 
 // Abort a move that could not start: stop, and unlock the door where the lift stands
-function abortMove(reason) {
-  stopMotion(reason);
+function abortMove(reason, holdMs) {
+  stopMotion(reason, holdMs);
   if (listOfLevels.includes(currentPosition)) sendToLevel(currentPosition, 'UNLOCK_DOOR');
 }
 
@@ -328,18 +416,26 @@ function lockAllDoorsThen(seq, onLocked, onFail) {
   if (connected.length === 0) return onFail('No level module connected, move refused');
   connected.forEach(l => {
     levelPack[l].state.doorLocked = false; // wait for a fresh confirmation
+    levelPack[l].state.lockRefused = false;
     sendToLevel(l, 'LOCK_DOOR');
   });
   const start = Date.now();
+  const st = l => (levelPack[l] ? levelPack[l].state : {});
   const poll = setInterval(() => {
     if (seq !== moveSeq) return clearInterval(poll); // move cancelled or replaced
-    if (connected.every(l => levelPack[l].state.doorLocked)) {
+    const refused = connected.filter(l => st(l).lockRefused && st(l).doorClosed === false);
+    if (connected.every(l => st(l).doorLocked)) {
       clearInterval(poll);
       onLocked();
+    } else if (refused.length) {
+      // Board answered CAN'T LOCK DOOR with door_closed = false: no point waiting
+      clearInterval(poll);
+      onFail(`Door open at floor ${refused.join(', ')}, lift not moving`, DOOR_ALERT_MS);
     } else if (Date.now() - start > DOOR_LOCK_TIMEOUT_MS) {
       clearInterval(poll);
-      const notLocked = connected.filter(l => !levelPack[l].state.doorLocked);
-      onFail(`Door not locked at level ${notLocked.join(', ')}, move aborted`);
+      const notLocked = connected.filter(l => !st(l).doorLocked);
+      const open = notLocked.filter(l => st(l).doorClosed === false);
+      onFail(open.length ? `Door open at floor ${open.join(', ')}, lift not moving` : `Door not locked at floor ${notLocked.join(', ')}, lift not moving`, DOOR_ALERT_MS);
     }
   }, 50);
 }
@@ -364,6 +460,7 @@ function parseLevelData(data, port=null) {
     const message = parts[1];
     if (message === 'LIFT HERE') {
       liftOverShot=null;
+      if (!isMotorOn()) savePositionAtFloor(levelLabel); // idle and on the line: confirmed position
       console.log(newDateStr(),'lift here', levelLabel)
       currentLevel = levelLabel;
       currentPosition = levelLabel;
@@ -395,8 +492,10 @@ function parseLevelData(data, port=null) {
         );
         moveSeq++;
         clearTravelTimeout();
+        noteStop();
         relayUp.writeSync(0);
         relayDown.writeSync(0);
+        if (mockLiftMode) mockCoast();
         if (manual) {
           if (lastDir === 1) {
             settings.manual.upEnabled = false;
@@ -420,8 +519,16 @@ function parseLevelData(data, port=null) {
         console.log(newDateStr(),`PRESENCE SENSOR TRIGGERED > Lift reached level: ${currentLevel}`);
       }
     } else if (message === 'LIFT AWAY') {
+      const sinceStop = lastStop && lastStop.level === levelLabel ? Date.now() - lastStop.time : Infinity;
+      if (!isMotorOn() && sinceStop <= OVERSHOOT_IGNORE_MS) {
+        // Lift coasted past the line after stopping here: still at this floor
+        lastStop = null;
+        keepAtFloor(levelLabel, `line lost ${sinceStop} ms after the stop`);
+        return;
+      }
       levelPack[levelLabel].state.presence = null;
       console.log(newDateStr(),`PRESENCE SENSOR TRIGGERED > Lift left level ${levelLabel}`);
+      if (isMotorOn()) lastLineLost = { level: levelLabel, time: Date.now() };
       if (relayUp.readSync()) {
         const nextLevelIdx = listOfLevels.indexOf(levelLabel) + 1
         const nextLevel = listOfLevels[nextLevelIdx]
@@ -432,15 +539,16 @@ function parseLevelData(data, port=null) {
         const nextLevel = listOfLevels[nextLevelIdx]
         currentPosition = `${nextLevel} - ${currentLevel}`
       }
-      else {
+      else if (levelLabel === currentPosition) { // a line-lost from a floor the lift is not at means nothing
         console.log(newDateStr(),`LIFT OVERSHOT @ level ${levelLabel} while going ${lastDir?"UP":"DOWN"}`);
         liftOverShot = {levelLabel,lastDir}
+        savePosition({ floor: levelLabel, viaOvershoot: false, overshotDir: lastDir, stale: false });
       }
     } else if (message === 'DOOR OPEN') {
       levelPack[levelLabel].state.doorClosed = false;
       if (settings.maintenance.enabled) console.warn(newDateStr(), `Maintenance mode: door open at level ${levelLabel} ignored`);
-      else if (liftState === 'Locking doors') abortMove(`Door open at level ${levelLabel}, move aborted`);
-      else if (isMotorOn()) stopMotion(`Door open at level ${levelLabel}, lift stopped`);
+      else if (liftState === 'Locking doors') abortMove(`Door open at floor ${levelLabel}, lift not moving`, DOOR_ALERT_MS);
+      else if (isMotorOn()) stopMotion(`Door open at floor ${levelLabel}, lift stopped`, DOOR_ALERT_MS);
       if (settings.light.auto) {
         // setLight(1);
       }
@@ -455,6 +563,15 @@ function parseLevelData(data, port=null) {
       levelPack[levelLabel].state.doorLocked = true;
     } else if (message === 'DOOR UNLOCKED') {
       levelPack[levelLabel].state.doorLocked = false;
+    } else if (message === "CAN'T LOCK DOOR") {
+      // Followed by door_lock_requested / door_closed lines; only a refused request with the door open aborts a move
+      if (levelPack[levelLabel]) levelPack[levelLabel].state.lockRefused = true;
+    } else if (message.startsWith('door_lock_requested = ')) {
+      if (levelPack[levelLabel] && message.endsWith('false')) levelPack[levelLabel].state.lockRefused = false;
+    } else if (message.startsWith('door_closed = ')) {
+      if (levelPack[levelLabel]) levelPack[levelLabel].state.doorClosed = message.endsWith('true');
+      if (levelPack[levelLabel] && levelPack[levelLabel].state.lockRefused && message.endsWith('false'))
+        console.warn(newDateStr(), `Level ${levelLabel} can't lock its door: door open`);
     } else if (message === 'call_button_pressed'){
       if (settings.callButton.enabled) {
         console.log(newDateStr(), `Call button pressed at ${levelLabel}`);
@@ -478,8 +595,8 @@ function parseLevelData(data, port=null) {
         levelPack[levelLabel].state.doorLocked = false;
       }
       if (settings.maintenance.enabled) console.warn(newDateStr(), `Maintenance mode: door forced open alert at level ${levelLabel} ignored`);
-      else if (liftState === 'Locking doors') abortMove(`Door forced open at level ${levelLabel}, move aborted`);
-      else if (isMotorOn()) stopMotion(`Door forced open at level ${levelLabel}, lift stopped`);
+      else if (liftState === 'Locking doors') abortMove(`Door forced open at floor ${levelLabel}, lift not moving`, DOOR_ALERT_MS);
+      else if (isMotorOn()) stopMotion(`Door forced open at floor ${levelLabel}, lift stopped`, DOOR_ALERT_MS);
     }
     // console.log('parts == 3')
     // console.log(parts)
@@ -492,7 +609,12 @@ function parseLevelData(data, port=null) {
     } else if (parts[1].startsWith("initial lift_sensor")){
       console.log(newDateStr(),'port', port.settings.path,"identified as level", parts[0])
       const here = parts[2]=='LIFT HERE'
-      if (here) currentPosition = parts[0]
+      if (here) {
+        currentPosition = parts[0]
+        currentLevel = parts[0]
+        liftOverShot = null
+        savePositionAtFloor(parts[0])
+      }
       if (!levelPack[parts[0]]) levelPack[parts[0]] = { port, state: { presence: here ? 'LIFT HERE' : null, doorClosed: true, doorLocked: true } };
       else levelPack[parts[0]].state.presence = here ? 'LIFT HERE' : null
     } 
@@ -611,12 +733,37 @@ function openSerialPort(path, index, isInitial = false) {
           };
         });
         startMockPanel(Number(process.env.MOCK_PANEL_PORT) || 9700, mockBoards, () => ({
+          overshoot: mockOvershoot.m ? `${mockOvershoot.m} m after ${mockOvershoot.delayMs} ms (ignore window ${OVERSHOOT_IGNORE_MS} ms)` : 'off',
           fault, maintenance: settings.maintenance, liftState, currentPosition, targetLevel, displayMessage, light: settings.light.currentState ? 1 : 0,
           presence: Object.fromEntries(listOfLevels.map(l => [l, levelPack[l] && levelPack[l].state.presence === 'LIFT HERE']))
-        }));
-        currentLevel = 'G';
-        levelPack['G'].state.presence = 'LIFT HERE'; // Set initial presence
-        currentPosition = 'G';
+        }), act => { // panel-wide actions
+          if (act !== 'overshoot') return 'unknown action';
+          // cycle: inside the ignore window, outside it (handled as a real overshoot), off
+          const steps = [{ m: 0.1, delayMs: 200 }, { m: 0.1, delayMs: OVERSHOOT_IGNORE_MS + 300 }, { m: 0, delayMs: 200 }];
+          const i = steps.findIndex(x => x.m === mockOvershoot.m && x.delayMs === mockOvershoot.delayMs);
+          mockOvershoot = steps[(i + 1) % steps.length];
+          console.log(newDateStr(), `Mock overshoot: ${mockOvershoot.m ? mockOvershoot.m + ' m after ' + mockOvershoot.delayMs + ' ms' : 'off'}`);
+          return null;
+        });
+        // Start where the last mock run left the lift (last_position.mock.json), G otherwise
+        currentLevel = 'none';
+        currentPosition = 'none';
+        liftOverShot = null;
+        savedPosition = null;
+        const saved = loadPosition();
+        const startFloor = saved ? saved.floor : 'G';
+        currentLevel = startFloor;
+        currentPosition = startFloor;
+        virtualLiftPosition = levelPositions[startFloor];
+        const coasted = saved && (saved.viaOvershoot || saved.overshotDir === 0 || saved.overshotDir === 1);
+        if (coasted) {
+          // it had coasted past the line: the virtual sensor reads LIFT AWAY, as on the real lift.
+          // Seed the virtual reading so that startup line-lost is not taken as a new event
+          const dir = saved.overshotDir === 0 ? 0 : 1;
+          virtualLiftPosition += (dir === 1 ? 1 : -1) * (mockOvershoot.m || 0.1);
+          mockLevelObject[startFloor] = `${startFloor} : LIFT AWAY`;
+        }
+        if (!coasted || saved.viaOvershoot) levelPack[startFloor].state.presence = 'LIFT HERE';
         updateMockLevelData();
       }
     } else if (runtimeErrorCount >= 2) { // Threshold for runtime errors to trigger mock if persists
@@ -660,6 +807,8 @@ function openSerialPort(path, index, isInitial = false) {
 console.log(newDateStr(),'--------------------');
 console.log(newDateStr(),'STARTING LIFT SERVER');
 console.log(newDateStr(),'--------------------');
+
+loadPosition(); // last known floor from before the restart; a board reporting LIFT HERE overrides it
 
 // Initialize serial ports
 portPaths.forEach((path, index) => {
@@ -965,8 +1114,29 @@ app.get('/status', verifyToken, (req, res) => {
 
 let virtualLiftMovingDirection = null; // Added missing declaration
 
+let mockMovingDir = null; // direction of the running virtual lift, used for the coast after a stop
+let mockCoastTimeout = null;
+
+// Mock mode: the virtual lift coasts past the line after a stop, like the real one (no deceleration)
+function mockCoast() {
+  clearInterval(virtualLiftMoveInterval);
+  virtualLiftMoveInterval = null;
+  const dir = mockMovingDir;
+  mockMovingDir = null;
+  if (dir === null || !mockOvershoot.m) return;
+  clearTimeout(mockCoastTimeout);
+  mockCoastTimeout = setTimeout(() => {
+    if (virtualLiftMoveInterval) return; // a new move started meanwhile
+    virtualLiftPosition += dir === 1 ? mockOvershoot.m : -mockOvershoot.m;
+    console.log(newDateStr(), `Virtual lift coasted ${mockOvershoot.m} m ${dir === 1 ? 'up' : 'down'} ${mockOvershoot.delayMs} ms after the stop: ${virtualLiftPosition.toFixed(2)}`);
+    updateMockLevelData();
+  }, mockOvershoot.delayMs);
+}
+
 function mockLiftUpdate(state, direction){
   if (state) {
+    clearTimeout(mockCoastTimeout);
+    mockMovingDir = direction === 1 ? 1 : 0;
     if (!virtualLiftMoveInterval) { // Prevent multiple intervals
       virtualLiftMoveInterval = setInterval(() => {
         const step = (direction === 1)? 0.02 : -0.02;
@@ -981,8 +1151,7 @@ function mockLiftUpdate(state, direction){
       }, 100); // Interval for movement simulation (adjust as needed)
     }
   } else {
-    clearInterval(virtualLiftMoveInterval); // Clear interval if running
-    virtualLiftMoveInterval = null;
+    mockCoast();
     updateMockLevelData(); // Update mock levels when lift stops
   }
 }
@@ -1029,6 +1198,7 @@ function goToFloor(newTargetLevel){
     manual = false;
     liftState = 'Locking doors';
     const seq = ++moveSeq;
+    noteMoveStart();
 
     // Only start the motor once every connected level confirms DOOR LOCKED
     lockAllDoorsThen(seq, () => {
@@ -1042,6 +1212,7 @@ function goToFloor(newTargetLevel){
         );
       }
       lastDir=desiredDirection
+      noteMotorStart();
       relayUp.writeSync(desiredDirection);
       relayDown.writeSync(1 - desiredDirection);
       liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
@@ -1082,6 +1253,7 @@ app.post('/stop', verifyToken, (req, res) => {
   settings.manual.downEnabled = false;
   liftOverShot = null
   console.log(newDateStr(),'[STOP]');
+  noteStop();
   displayMessage = 'Emergency STOP';
   clearTimeout(clearDisplayMessageTimeout);
    clearDisplayMessageTimeout = setTimeout(() => {
@@ -1150,7 +1322,9 @@ function manualControl(direction, state) {
       // Always switch both directions off first, then the new one on, so the shared GPIO 24 ends up high
       const opposite = direction === 'up' ? relayDown : relayUp;
       const reversing = opposite.readSync() === 1;
+      noteStop(); // reversing: the running direction stops here
       const seq = ++moveSeq;
+      noteMoveStart();
       clearTravelTimeout();
       relayUp.writeSync(0);
       relayDown.writeSync(0);
@@ -1165,6 +1339,7 @@ function manualControl(direction, state) {
             console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=true`);
           }
           lastDir = direction === 'up' ? 1 : 0;
+          noteMotorStart();
           (direction === 'up' ? relayUp : relayDown).writeSync(1);
           liftState = (direction === 'up') ? 'Manual UP' : 'Manual DOWN';
           displayMessage = liftState;
@@ -1178,6 +1353,7 @@ function manualControl(direction, state) {
     } else {
       moveSeq++;
       clearTravelTimeout();
+      noteStop();
       if (mockLiftMode) {
         mockLiftUpdate(false, direction === 'up' ? 1 : 0);
         console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=false`);

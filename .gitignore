@@ -6,3 +6,6 @@ client/build/
 env/
 nohup.out
 .DS_Store
+last_position.json
+last_position.mock.json
+*.json.tmp
