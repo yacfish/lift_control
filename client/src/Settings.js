@@ -39,6 +39,48 @@ function Settings({ settings, onUpdate, targetLevel, position }) {
     return () => clearTimeout(timer);
   }, [currentPanelIndex]);
 
+  // Swipe on the wall background: left = next page, right = previous page (same as the arrows).
+  // Ignored when it starts on a control, and only when clearly horizontal so vertical scrolling still works
+  useEffect(() => {
+    const SWIPE_MIN_PX = 50;
+    const CONTROLS = 'button, input, label, select, textarea, a, .toggle, .slider, .nav-wrapper';
+    let start = null;
+    const begin = (x, y, target) => {
+      start = target && target.closest && target.closest(CONTROLS) ? null : { x, y };
+    };
+    const finish = (x, y) => {
+      if (!start) return;
+      const dx = x - start.x;
+      const dy = y - start.y;
+      start = null;
+      if (Math.abs(dx) >= SWIPE_MIN_PX && Math.abs(dx) > 2 * Math.abs(dy)) (dx < 0 ? navRight : navLeft)();
+    };
+    const onTouchStart = (e) => {
+      if (e.touches.length !== 1) { start = null; return; }
+      begin(e.touches[0].clientX, e.touches[0].clientY, e.target);
+    };
+    const onTouchEnd = (e) => {
+      const t = e.changedTouches[0];
+      if (t) finish(t.clientX, t.clientY);
+    };
+    const onTouchCancel = () => { start = null; };
+    // Desktop: mouse drag does the same
+    const onPointerDown = (e) => { if (e.pointerType === 'mouse') begin(e.clientX, e.clientY, e.target); };
+    const onPointerUp = (e) => { if (e.pointerType === 'mouse') finish(e.clientX, e.clientY); };
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchend', onTouchEnd, { passive: true });
+    document.addEventListener('touchcancel', onTouchCancel, { passive: true });
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('pointerup', onPointerUp);
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchend', onTouchEnd);
+      document.removeEventListener('touchcancel', onTouchCancel);
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('pointerup', onPointerUp);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const renderPanel = () => {
     const name = panelNames[currentPanelIndex];
     switch (name) {
