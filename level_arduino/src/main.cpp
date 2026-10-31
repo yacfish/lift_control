@@ -33,7 +33,7 @@ bool call_button_pressed = false;
 bool calibrartion_status = false;
 
 unsigned long lastHeartbeat = 0;
-const unsigned long HEARTBEAT_INTERVAL = 5000; // Send heartbeat every 5 seconds
+const unsigned long HEARTBEAT_INTERVAL = 500; // Heartbeat every 0.5 s so the server can detect a silent board within ~2 s (BOARD_SILENT_MS=2000)
 
 ////////////////////////////////////////////////////////////////////
 // CUSTOM FUNCTIONS
