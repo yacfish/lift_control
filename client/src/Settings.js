@@ -130,7 +130,7 @@ function Settings({ settings, onUpdate, targetLevel, position }) {
             </button>
             <div className="toggle-container">
               <label className="toggle">
-                <span className="toggle-label">Ignore sensors</span>
+                <span className="toggle-label">IGNORE SENSORS</span>
                 <input type="checkbox" checked={m.enabled} onChange={(e) => handleValueChange('maintenance', 'enabled', e.target.checked)} />
                 <span className="slider"></span>
               </label>
