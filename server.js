@@ -75,6 +75,7 @@ class GpioRelayGroup {
 const ports = [];
 const parsers = [];
 const levelPack = {};
+// Ports tried at startup; any other ttyUSB*/ttyACM* found later is appended (boards can re-enumerate, e.g. ttyUSB3 -> ttyUSB4 after an EMI reset)
 const portPaths = [
   '/dev/ttyUSB0',
   '/dev/ttyUSB1',
@@ -89,6 +90,28 @@ let retryBackoffs = new Array(portPaths.length).fill(5000); // Initial backoff: 
 let initialErrorCount = 0;
 let runtimeErrorCount = 0;
 const lastDataTimes = portPaths.map(() => Date.now());
+
+// Index of a port path in the per-port arrays, adding it if new
+function portIndex(path) {
+  let index = portPaths.indexOf(path);
+  if (index === -1) {
+    index = portPaths.push(path) - 1;
+    retryTimeouts[index] = null;
+    retryBackoffs[index] = 5000;
+    lastDataTimes[index] = Date.now();
+  }
+  return index;
+}
+
+// List serial devices currently present (ttyUSB* / ttyACM*)
+async function listSerialPaths() {
+  try {
+    const list = await SerialPort.list();
+    return list.map(p => p.path).filter(p => /^\/dev\/tty(USB|ACM)\d+$/.test(p));
+  } catch (err) {
+    return fs.readdirSync('/dev').filter(n => /^tty(USB|ACM)\d+$/.test(n)).map(n => '/dev/' + n);
+  }
+}
     
 let currentLevel = 'none';
 let currentPosition = 'none';
@@ -222,6 +245,8 @@ function parseLevelData(data, port=null) {
     if (!levelPack[levelLabel]) {
       levelPack[levelLabel] = { port, state: { presence: null, doorClosed: true, doorLocked: false } };
     } else if (levelPack[levelLabel].port !== port) {
+      const oldPort = levelPack[levelLabel].port;
+      if (oldPort && oldPort.isOpen) console.warn(newDateStr(), `WARNING: level ${levelLabel} claimed by both ${oldPort.settings.path} and ${port.settings.path}, keeping newest (${port.settings.path})`);
       console.log(newDateStr(), `level ${levelLabel} now on port ${port.settings.path}`);
       levelPack[levelLabel].port = port;
     }
@@ -479,17 +504,24 @@ function openSerialPort(path, index, isInitial = false) {
     const dateTimeStr = newDateStr();
     console.error(`${dateTimeStr} Serial port closed for ${path} (backoff will be ${retryBackoffs[index]/1000}s)`);
     if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
+    // Drop level mappings on this port so the level can be picked up again on whatever port it reappears
+    Object.keys(levelPack).forEach(l => {
+      if (levelPack[l].port === port) {
+        console.log(newDateStr(), `level ${l} unmapped from ${path}`);
+        delete levelPack[l];
+      }
+    });
     // Clear any existing timeout first
     if (retryTimeouts[index]) {
       clearTimeout(retryTimeouts[index]);
       retryTimeouts[index] = null;
     }
     // Set exponential backoff timeout only if not in mock mode
-    if (!mockLiftMode) {
+    if (!mockLiftMode && fs.existsSync(path)) {
       const delay = retryBackoffs[index];
       retryTimeouts[index] = setTimeout(() => {
         retryTimeouts[index] = null; // Clear after firing
-        openSerialPort(path, index, false);
+        if (fs.existsSync(path)) openSerialPort(path, index, false);
         // Double backoff for next time (cap at 60s)
         retryBackoffs[index] = Math.min(retryBackoffs[index] * 2, 60000);
       }, delay);
@@ -510,7 +542,7 @@ portPaths.forEach((path, index) => {
 setInterval(() => {
   if (mockLiftMode) return; // Skip in mock mode
   portPaths.forEach((path, index) => {
-    if (Date.now() - lastDataTimes[index] > 20000) { // 20s threshold
+    if (ports[index] && ports[index].isOpen && Date.now() - lastDataTimes[index] > 20000) { // 20s threshold
       console.error(newDateStr(), `Stale heartbeat for ${path} (>20s), forcing reconnect`);
       runtimeErrorCount++; // Count as runtime error
       if (ports[index] && ports[index].isOpen) {
@@ -523,6 +555,31 @@ setInterval(() => {
     }
   });
 }, 5000); // Check every 5s
+
+// Every 5s, open any serial port that appeared (e.g. a board re-enumerated on a new ttyUSB number)
+let scanning = false;
+setInterval(async () => {
+  if (mockLiftMode || scanning) return;
+  scanning = true;
+  try {
+    const present = await listSerialPaths();
+    present.forEach(path => {
+      const index = portIndex(path);
+      if (!(ports[index] && ports[index].isOpen) && !retryTimeouts[index]) openSerialPort(path, index, false);
+    });
+    // Close ports whose device vanished
+    portPaths.forEach((path, index) => {
+      if (!present.includes(path) && ports[index] && ports[index].isOpen) {
+        console.error(newDateStr(), `Serial device ${path} disappeared, closing`);
+        ports[index].close();
+      }
+    });
+  } catch (err) {
+    console.error(newDateStr(), 'Serial port scan failed:', err.message);
+  } finally {
+    scanning = false;
+  }
+}, 5000);
 
 const app = express();
 
