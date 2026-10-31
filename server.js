@@ -41,6 +41,7 @@ const http = require('http');
 const fs = require('fs');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
+const { createMockBoard, startMockPanel } = require('./mock_panel');
 
 const settings = {
   doors: { auto: true },
@@ -215,7 +216,6 @@ function abortMove(reason) {
 
 // Send LOCK_DOOR to every connected level and call onLocked once all report DOOR LOCKED
 function lockAllDoorsThen(seq, onLocked, onFail) {
-  if (mockLiftMode) return onLocked();
   const connected = Object.keys(levelPack).filter(l => levelPack[l].port && levelPack[l].port.isOpen);
   if (connected.length === 0) return onFail('No level module connected, move refused');
   connected.forEach(l => {
@@ -487,15 +487,22 @@ function openSerialPort(path, index, isInitial = false) {
         mockLiftMode = true;
         console.error(newDateStr(), 'Mock Lift Mode Activated due to initial errors');
         // Initialize levelPack for mock
+        // Virtual boards answer LOCK_DOOR/UNLOCK_DOOR like the firmware; their lines go through parseLevelData like serial data
+        const mockBoards = {};
         listOfLevels.forEach(level => {
+          mockBoards[level] = createMockBoard(level, line => {
+            console.log(newDateStr(), `Mock_${level} : ${line}`);
+            parseLevelData(line);
+          });
           levelPack[level] = {
-            port: {
-              write: (data, cb) => { console.log(newDateStr(), `Mock write to ${level}: ${data}`); if (cb) cb(null); },
-              settings: { path: `Mock_${level}` } // FIXED: Add mock path for logging
-            },
+            port: mockBoards[level].port,
             state: { presence: null, doorClosed: true, doorLocked: true }
           };
         });
+        startMockPanel(Number(process.env.MOCK_PANEL_PORT) || 9700, mockBoards, () => ({
+          liftState, currentPosition, targetLevel, displayMessage, light: settings.light.currentState ? 1 : 0,
+          presence: Object.fromEntries(listOfLevels.map(l => [l, levelPack[l] && levelPack[l].state.presence === 'LIFT HERE']))
+        }));
         currentLevel = 'G';
         levelPack['G'].state.presence = 'LIFT HERE'; // Set initial presence
         currentPosition = 'G';
