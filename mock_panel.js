@@ -4,8 +4,11 @@ const http = require('http');
 
 // A virtual board; feed(line) receives the raw "<level> : <message>" lines a real board would print
 function createMockBoard(level, feed) {
-  const b = { level, doorClosed: true, doorLocked: true, lockRequested: false };
-  const send = mess => setImmediate(() => feed(`${level} : ${mess}`));
+  const b = { level, doorClosed: true, doorLocked: true, lockRequested: false, silent: false };
+  // A silenced board keeps its port open but sends nothing (like the B board in the 2026-10-31 incident)
+  const send = mess => setImmediate(() => { if (!b.silent) feed(`${level} : ${mess}`); });
+  send('<3');
+  setInterval(() => send('<3'), 5000); // firmware HEARTBEAT_INTERVAL
   const lockIfRequestedAndClosed = () => {
     if (b.lockRequested && b.doorClosed) {
       b.doorLocked = true;
@@ -48,6 +51,7 @@ function createMockBoard(level, feed) {
     else if (act === 'force') { if (b.doorClosed) doorChanged(false); }
     else if (act === 'close') { if (!b.doorClosed) doorChanged(true); }
     else if (act === 'call') send('call_button_pressed');
+    else if (act === 'silence') { b.silent = !b.silent; console.log(`Mock board ${level} ${b.silent ? 'SILENCED' : 'back'}`); send('<3'); }
     else return 'unknown action';
     return null;
   };
@@ -58,19 +62,20 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Lift mock 
 <style>body{font-family:sans-serif;margin:20px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px}
 .on{background:#cfc}.off{background:#fcc}button{margin:2px}#lift{margin:10px 0;font-weight:bold}#err{color:#c00}
 #strip{height:14px;width:420px;border-radius:7px;margin:8px 0;background:#333;transition:all .3s}#strip.lit{background:linear-gradient(90deg,#fff6c0,#ffe066,#fff6c0);box-shadow:0 0 18px 6px #ffd84d}</style></head>
-<body><h2>Lift mock panel</h2><div id="lift"></div><div>LED strip: <span id="lightTxt"></span></div><div id="strip"></div><div id="err"></div>
+<body><h2>Lift mock panel</h2><div id="mode" style="color:#c60;font-weight:bold"></div><div id="lift"></div><div>LED strip: <span id="lightTxt"></span></div><div id="strip"></div><div id="err"></div>
 <table><thead><tr><th>Level</th><th>Lift</th><th>Door</th><th>Lock</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table>
 <script>
 async function act(l,a){const r=await fetch('/action/'+l+'/'+a,{method:'POST'});const j=await r.json();document.getElementById('err').textContent=j.error||'';refresh();}
 async function refresh(){try{const s=await (await fetch('/state')).json();
+document.getElementById('mode').textContent=(s.fault?'FAULT: '+s.fault.reason+' ':'')+(s.maintenance&&s.maintenance.enabled?'MAINTENANCE MODE until '+new Date(s.maintenance.until).toLocaleTimeString():'');
 document.getElementById('lift').textContent='Lift: '+s.liftState+' | position '+s.currentPosition+' | target '+s.targetLevel+' | '+s.displayMessage;
 document.getElementById('strip').className=s.light?'lit':'';document.getElementById('lightTxt').textContent=s.light?'ON':'OFF';
 document.getElementById('rows').innerHTML=s.levels.slice().reverse().map(l=>'<tr><td>'+l.level+'</td>'+
-'<td class="'+(l.liftHere?'on':'')+'">'+(l.liftHere?'HERE':'away')+'</td>'+
+'<td class="'+(l.liftHere?'on':'')+'">'+(l.liftHere?'HERE':'away')+(l.silent?' <b>(SILENT)</b>':'')+'</td>'+
 '<td class="'+(l.doorClosed?'on':'off')+'">'+(l.doorClosed?'closed':'OPEN')+'</td>'+
 '<td class="'+(l.doorLocked?'on':'off')+'">'+(l.doorLocked?'locked':(l.lockRequested?"lock requested (can't lock)":'unlocked'))+'</td>'+
 '<td><button onclick="act(\\''+l.level+'\\',\\'open\\')">Open door</button><button onclick="act(\\''+l.level+'\\',\\'force\\')">Force open</button>'+
-'<button onclick="act(\\''+l.level+'\\',\\'close\\')">Close door</button><button onclick="act(\\''+l.level+'\\',\\'call\\')">Call button</button></td></tr>').join('');
+'<button onclick="act(\\''+l.level+'\\',\\'close\\')">Close door</button><button onclick="act(\\''+l.level+'\\',\\'call\\')">Call button</button><button onclick="act(\\''+l.level+'\\',\\'silence\\')">'+(l.silent?'Unsilence board':'Silence board')+'</button></td></tr>').join('');
 }catch(e){document.getElementById('err').textContent='server unreachable';}}
 setInterval(refresh,500);refresh();
 </script></body></html>`;
@@ -89,7 +94,7 @@ function startMockPanel(port, boards, getStatus) {
     if (req.url === '/state') {
       const s = getStatus();
       return json(200, { ...s, levels: Object.values(boards).map(b => ({
-        level: b.level, doorClosed: b.doorClosed, doorLocked: b.doorLocked, lockRequested: b.lockRequested, liftHere: !!s.presence[b.level]
+        level: b.level, silent: b.silent, doorClosed: b.doorClosed, doorLocked: b.doorLocked, lockRequested: b.lockRequested, liftHere: !!s.presence[b.level]
       })) });
     }
     res.writeHead(200, { 'Content-Type': 'text/html' });
