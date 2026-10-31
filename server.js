@@ -13,6 +13,7 @@ let targetLevel = 'none'; // Initial target level
 let virtualLiftMoveInterval; // Variable to hold the interval
 let mockLiftMode = false; // Mock lift mode variable, false by default
 const mockLevelObject = {}
+const mockBoards = {}; // virtual level boards (mock mode only)
 const levelPositions = { // Level positions in meters
   'B': -3,
   'G': 0,
@@ -27,8 +28,15 @@ let initiatedByButton = false;
 
 // Motion safety settings (override with env vars of the same name)
 const LEVEL_HEIGHT_M = 3; // distance between two levels, matches levelPositions
-const SECONDS_PER_LEVEL = Number(process.env.SECONDS_PER_LEVEL) || 20; // max travel time for one level
-const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 10; // extra time added to every move
+// Measured travel time per segment in seconds (button press to LIFT HERE), segment k = between listOfLevels[k] and [k+1]: B-G, G-1, 1-2
+const parseSegments = (str, def) => { const a = String(str || '').split(',').map(Number); return a.length === 3 && a.every(n => n > 0) ? a : def; };
+const SEGMENT_TIMES_UP = parseSegments(process.env.SEGMENT_TIMES_UP, [18, 18, 17]);   // B->G, G->1, 1->2
+const SEGMENT_TIMES_DOWN = parseSegments(process.env.SEGMENT_TIMES_DOWN, [17, 18, 17]); // G->B, 1->G, 2->1
+const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 3; // hard travel limit = expected time + margin
+// A board is "silent" when no line came from it for this long. Firmware heartbeat is 5 s today, so keep > 5 s until it is lowered
+const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 6000;
+const FAULT_CLEAR_MS = Number(process.env.FAULT_CLEAR_MS) || 10000; // silent board must be healthy this long before trips are allowed again
+const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 15;
 const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
 const REVERSAL_DEAD_TIME_MS = Number(process.env.REVERSAL_DEAD_TIME_MS) || 300; // pause before reversing direction
 let travelTimeoutId = null;
@@ -47,7 +55,8 @@ const settings = {
   doors: { auto: true },
   light: { auto: true, timeout: 60, currentState: false },
   callButton: { enabled: true },
-  manual: { upEnabled: false, downEnabled: false }
+  manual: { upEnabled: false, downEnabled: false },
+  maintenance: { enabled: false, until: null } // door alerts / lock checks ignored, manual moves only
 };
 
 class GpioRelayGroup {
@@ -159,11 +168,32 @@ function clearTravelTimeout() {
   travelTimeoutId = null;
 }
 
-// Safety cutoff: stop the motor if the move takes longer than expected
-function startTravelTimeout(levels) {
+// Expected travel time in ms between two positions (meters), from the measured segment times
+function expectedTravelMs(fromM, toM) {
+  const times = toM > fromM ? SEGMENT_TIMES_UP : SEGMENT_TIMES_DOWN;
+  const a = (Math.min(fromM, toM) - levelPositions['B']) / LEVEL_HEIGHT_M;
+  const b = (Math.max(fromM, toM) - levelPositions['B']) / LEVEL_HEIGHT_M;
+  let ms = 0;
+  times.forEach((t, k) => { ms += Math.max(0, Math.min(b, k + 1) - Math.max(a, k)) * t * 1000; });
+  return ms;
+}
+
+// Numeric position (meters) of currentPosition, mid-segment when between two levels
+// Position used for travel-time estimates. Between floors the exact spot is unknown,
+// so use the end of the gap farthest from the target (worst case, never stop short).
+function currentPositionM(targetM) {
+  if (currentPosition.includes('-')) {
+    const [a, b] = currentPosition.split(' - ').map(l => levelPositions[l]);
+    if (targetM === undefined) return (a + b) / 2;
+    return Math.abs(a - targetM) > Math.abs(b - targetM) ? a : b;
+  }
+  return levelPositions[currentPosition];
+}
+
+// Safety cutoff: stop the motor if the move takes longer than expected (ms = expected travel time)
+function startTravelTimeout(expectedMs) {
   clearTravelTimeout();
-  const n = (isFinite(levels) && levels > 0) ? Math.ceil(levels) : listOfLevels.length - 1;
-  const ms = (n * SECONDS_PER_LEVEL + TRAVEL_MARGIN_S) * 1000;
+  const ms = Math.round(expectedMs + TRAVEL_MARGIN_S * 1000);
   travelTimeoutId = setTimeout(() => {
     travelTimeoutId = null;
     stopMotion(`Travel timeout (${ms / 1000}s), lift stopped`);
@@ -176,6 +206,80 @@ function isMotorOn() {
 
 function isMoveActive() {
   return isMotorOn() || liftState === 'Locking doors';
+}
+
+// ---- Trip guard: a silent destination board must not strand people in the cabin ----
+const levelLastData = {}; // level -> time of last line received from its board
+let trip = null;  // active /floor trip: { seq, dir, fromM, startTime, expectedMs, mode: 'normal' | 'stopByTime' | 'allSilent' }
+let fault = null; // { levels: [...], reason, since, backSince } blocks new trips until those boards are healthy again
+
+function boardAlive(l) {
+  const lp = levelPack[l];
+  return !!(lp && lp.port && lp.port.isOpen && Date.now() - (levelLastData[l] || 0) < BOARD_SILENT_MS);
+}
+
+function enterFault(levels, reason) {
+  const list = fault ? [...new Set([...fault.levels, ...levels])] : levels;
+  fault = { levels: list, reason, since: Date.now(), backSince: null };
+  console.error(newDateStr(), `FAULT (${list.join(', ')}): ${reason} - new trips blocked until the board(s) are back`);
+}
+
+setInterval(() => {
+  if (!trip) return;
+  if (trip.seq !== moveSeq || !isMotorOn()) { trip = null; return; } // trip ended (arrived, stopped, replaced)
+  const elapsed = Date.now() - trip.startTime;
+  const dest = targetLevel;
+  if (trip.mode !== 'allSilent' && !listOfLevels.some(boardAlive)) {
+    trip.mode = 'allSilent';
+    console.error(newDateStr(), `ALL level boards silent during trip to ${dest}: will stop by time at expected arrival (${Math.round(trip.expectedMs / 1000)}s). Door locks open on power loss, nothing more possible in software`);
+  } else if (trip.mode === 'normal' && listOfLevels.includes(dest) && !boardAlive(dest)) {
+    const step = trip.dir ? 1 : -1;
+    let i = listOfLevels.indexOf(dest) + step;
+    while (i >= 0 && i < listOfLevels.length && !boardAlive(listOfLevels[i])) i += step;
+    if (i >= 0 && i < listOfLevels.length) {
+      const next = listOfLevels[i];
+      enterFault([dest], `board ${dest} silent during trip, continuing to ${next}`);
+      targetLevel = next;
+      trip.expectedMs = expectedTravelMs(trip.fromM, levelPositions[next]);
+      displayMessage = `Level ${dest} not responding, going to ${next}`;
+    } else {
+      trip.mode = 'stopByTime';
+      enterFault([dest], `board ${dest} silent during trip, end floor: stopping by time (${Math.round(trip.expectedMs / 1000)}s)`);
+      displayMessage = `Level ${dest} not responding, stopping by time`;
+    }
+  }
+  if (trip.mode !== 'normal' && elapsed >= trip.expectedMs) {
+    const allSilent = trip.mode === 'allSilent';
+    trip = null;
+    stopMotion(`Stopped by time at ${dest} (${allSilent ? 'all boards silent' : 'board ' + dest + ' silent'})`);
+    sendToLevel(dest, 'UNLOCK_DOOR');
+    if (allSilent) enterFault(listOfLevels.slice(), 'all level boards silent, lift stopped by time');
+  } else if (elapsed >= trip.expectedMs + TRAVEL_MARGIN_S * 1000) {
+    trip = null;
+    stopMotion(`Travel limit (${Math.round(elapsed / 1000)}s) reached before ${dest}, lift stopped`);
+  }
+}, 200);
+
+// Clear the fault once every faulty board has been sending data again for FAULT_CLEAR_MS
+setInterval(() => {
+  if (!fault) return;
+  if (fault.levels.every(boardAlive)) {
+    if (!fault.backSince) fault.backSince = Date.now();
+    else if (Date.now() - fault.backSince >= FAULT_CLEAR_MS) {
+      console.log(newDateStr(), `FAULT cleared: board(s) ${fault.levels.join(', ')} healthy again, trips allowed`);
+      fault = null;
+    }
+  } else fault.backSince = null;
+}, 1000);
+
+// Maintenance mode: door-open alerts and door-lock checks ignored, only manual moves, auto-expires
+let maintenanceTimeoutId = null;
+function setMaintenance(enabled, why) {
+  clearTimeout(maintenanceTimeoutId);
+  settings.maintenance.enabled = !!enabled;
+  settings.maintenance.until = enabled ? Date.now() + MAINTENANCE_MINUTES * 60000 : null;
+  if (enabled) maintenanceTimeoutId = setTimeout(() => setMaintenance(false, 'expired'), MAINTENANCE_MINUTES * 60000);
+  console.warn(newDateStr(), `MAINTENANCE MODE ${enabled ? 'ENABLED for ' + MAINTENANCE_MINUTES + ' min' : 'DISABLED'} (${why})`);
 }
 
 // Stop the motor and reset move state, with a message for the display
@@ -216,6 +320,10 @@ function abortMove(reason) {
 
 // Send LOCK_DOOR to every connected level and call onLocked once all report DOOR LOCKED
 function lockAllDoorsThen(seq, onLocked, onFail) {
+  if (settings.maintenance.enabled) {
+    console.warn(newDateStr(), 'Maintenance mode: door lock check skipped');
+    return onLocked();
+  }
   const connected = Object.keys(levelPack).filter(l => levelPack[l].port && levelPack[l].port.isOpen);
   if (connected.length === 0) return onFail('No level module connected, move refused');
   connected.forEach(l => {
@@ -240,6 +348,7 @@ function lockAllDoorsThen(seq, onLocked, onFail) {
 function parseLevelData(data, port=null) {
   const parts = data.split(' : ');
   const levelLabel = parts[0];
+  if (listOfLevels.includes(levelLabel)) levelLastData[levelLabel] = Date.now();
   // Keep levelPack pointing at the port this level currently talks on (fixes stale port after reconnect)
   if (port && listOfLevels.includes(levelLabel)) {
     if (!levelPack[levelLabel]) {
@@ -329,7 +438,8 @@ function parseLevelData(data, port=null) {
       }
     } else if (message === 'DOOR OPEN') {
       levelPack[levelLabel].state.doorClosed = false;
-      if (liftState === 'Locking doors') abortMove(`Door open at level ${levelLabel}, move aborted`);
+      if (settings.maintenance.enabled) console.warn(newDateStr(), `Maintenance mode: door open at level ${levelLabel} ignored`);
+      else if (liftState === 'Locking doors') abortMove(`Door open at level ${levelLabel}, move aborted`);
       else if (isMotorOn()) stopMotion(`Door open at level ${levelLabel}, lift stopped`);
       if (settings.light.auto) {
         // setLight(1);
@@ -367,7 +477,8 @@ function parseLevelData(data, port=null) {
         levelPack[levelLabel].state.doorClosed = false;
         levelPack[levelLabel].state.doorLocked = false;
       }
-      if (liftState === 'Locking doors') abortMove(`Door forced open at level ${levelLabel}, move aborted`);
+      if (settings.maintenance.enabled) console.warn(newDateStr(), `Maintenance mode: door forced open alert at level ${levelLabel} ignored`);
+      else if (liftState === 'Locking doors') abortMove(`Door forced open at level ${levelLabel}, move aborted`);
       else if (isMotorOn()) stopMotion(`Door forced open at level ${levelLabel}, lift stopped`);
     }
     // console.log('parts == 3')
@@ -402,6 +513,7 @@ function updateMockLevelData() {
  
     const levelStatus = (positionDiff <= tolerance)? 'LIFT HERE' : 'LIFT AWAY';
     const mockLevelData = `${level} : ${levelStatus}`;
+    if (mockBoards[level] && mockBoards[level].silent) continue; // silenced board sends nothing
     if(!mockLevelObject.hasOwnProperty(level) || mockLevelObject[level] != mockLevelData) {
       mockLevelObject[level] = mockLevelData;
       // console.log(`Mock data update: ${mockLevelData}`);
@@ -488,10 +600,9 @@ function openSerialPort(path, index, isInitial = false) {
         console.error(newDateStr(), 'Mock Lift Mode Activated due to initial errors');
         // Initialize levelPack for mock
         // Virtual boards answer LOCK_DOOR/UNLOCK_DOOR like the firmware; their lines go through parseLevelData like serial data
-        const mockBoards = {};
         listOfLevels.forEach(level => {
           mockBoards[level] = createMockBoard(level, line => {
-            console.log(newDateStr(), `Mock_${level} : ${line}`);
+            if (!line.endsWith(' : <3')) console.log(newDateStr(), `Mock_${level} : ${line}`);
             parseLevelData(line);
           });
           levelPack[level] = {
@@ -500,7 +611,7 @@ function openSerialPort(path, index, isInitial = false) {
           };
         });
         startMockPanel(Number(process.env.MOCK_PANEL_PORT) || 9700, mockBoards, () => ({
-          liftState, currentPosition, targetLevel, displayMessage, light: settings.light.currentState ? 1 : 0,
+          fault, maintenance: settings.maintenance, liftState, currentPosition, targetLevel, displayMessage, light: settings.light.currentState ? 1 : 0,
           presence: Object.fromEntries(listOfLevels.map(l => [l, levelPack[l] && levelPack[l].state.presence === 'LIFT HERE']))
         }));
         currentLevel = 'G';
@@ -518,7 +629,9 @@ function openSerialPort(path, index, isInitial = false) {
   port.on('close', () => {
     const dateTimeStr = newDateStr();
     console.error(`${dateTimeStr} Serial port closed for ${path} (backoff will be ${retryBackoffs[index]/1000}s)`);
-    if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
+    // During a /floor trip keep going: the trip guard diverts to the next live floor or stops by time
+    if (trip && trip.seq === moveSeq && isMotorOn()) console.error(newDateStr(), `Serial link lost (${path}) during trip, trip guard takes over`);
+    else if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
     // Drop level mappings on this port so the level can be picked up again on whatever port it reappears
     Object.keys(levelPack).forEach(l => {
       if (levelPack[l].port === port) {
@@ -833,6 +946,8 @@ app.get('/status', verifyToken, (req, res) => {
       displayMessage,
       manual,
       settings,
+      fault: fault ? { levels: fault.levels, reason: fault.reason, since: fault.since } : null,
+      boards: Object.fromEntries(listOfLevels.map(l => [l, boardAlive(l)])),
       doorStatuses: {
         allOpen: Object.values(levelPack).every(l => !l.state.doorLocked),
         allLocked: Object.values(levelPack).every(l => l.state.doorLocked)
@@ -872,6 +987,12 @@ function mockLiftUpdate(state, direction){
   }
 }
 function goToFloor(newTargetLevel){
+  const blocked = tripBlockedReason();
+  if (blocked) {
+    console.warn(newDateStr(), `Trip to ${newTargetLevel} refused: ${blocked}`);
+    displayMessage = blocked;
+    return false;
+  }
   targetLevel = newTargetLevel;
   displayMessage = `Level ${newTargetLevel} Requested`;
   clearTimeout(clearDisplayMessageTimeout);
@@ -924,16 +1045,27 @@ function goToFloor(newTargetLevel){
       relayUp.writeSync(desiredDirection);
       relayDown.writeSync(1 - desiredDirection);
       liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
-      startTravelTimeout(Math.abs(heightDiff) / LEVEL_HEIGHT_M);
+      trip = { seq, dir: desiredDirection, fromM: currentPositionM(levelPositions[targetLevel]), startTime: Date.now(), expectedMs: expectedTravelMs(currentPositionM(levelPositions[targetLevel]), levelPositions[targetLevel]), mode: 'normal' };
       if (settings.light.auto) setLight(1);
     }, abortMove);
   } else targetLevel = null;
+  return true;
+}
+
+function tripBlockedReason() {
+  if (settings.maintenance.enabled) return 'Maintenance mode: manual moves only';
+  if (fault) return `Fault: level ${fault.levels.join(', ')} not responding, trips blocked`;
+  return null;
 }
 app.post('/floor', verifyToken, (req, res) => {
   console.log(newDateStr(),'[floor]', req.body);
   const level = req.body.floor;
   if (level && levelPositions.hasOwnProperty(level)) {
-    if (liftState === 'Idle') {
+    const blocked = tripBlockedReason();
+    if (blocked) {
+      console.log(newDateStr(), `Floor request ${level} refused: ${blocked}`);
+      res.status(423).json({ error: blocked });
+    } else if (liftState === 'Idle') {
       goToFloor(level)
       res.json({ message: `Target level set to ${level}` });
     } else {
@@ -1037,11 +1169,9 @@ function manualControl(direction, state) {
           liftState = (direction === 'up') ? 'Manual UP' : 'Manual DOWN';
           displayMessage = liftState;
           // Max travel = distance to the end of the shaft in that direction
-          let numPosition;
-          if (currentPosition.includes('-')) numPosition = levelPositions[currentPosition.split(' - ')[0]] + LEVEL_HEIGHT_M / 2;
-          else numPosition = levelPositions[currentPosition];
+          const numPosition = currentPositionM(direction === "up" ? levelPositions["2"] : levelPositions["B"]);
           const endPosition = direction === 'up' ? levelPositions['2'] : levelPositions['B'];
-          startTravelTimeout(Math.abs(endPosition - numPosition) / LEVEL_HEIGHT_M);
+          startTravelTimeout(isFinite(numPosition) ? expectedTravelMs(numPosition, endPosition) : expectedTravelMs(levelPositions['B'], levelPositions['2']));
           if (settings.light.auto) setLight(1);
         }, abortMove);
       }, reversing ? REVERSAL_DEAD_TIME_MS : 0);
@@ -1164,6 +1294,11 @@ app.post('/settings/call-buttons/enable', verifyToken, (req, res) => {
   );
   settings.callButton.enabled = req.body.value;
   res.json({ success: true });
+});
+
+app.post('/settings/maintenance/enabled', verifyToken, (req, res) => {
+  setMaintenance(!!req.body.value, 'from client');
+  res.json({ success: true, maintenance: settings.maintenance });
 });
 
 app.post('/settings/manual/up', verifyToken, (req, res) => {

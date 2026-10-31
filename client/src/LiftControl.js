@@ -27,7 +27,8 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
     doors: { auto: true },
     light: { auto: true, currentState: false, timeout: 60 },
     callButton: { enabled: true },
-    manual: { upEnabled: false, downEnabled: false }
+    manual: { upEnabled: false, downEnabled: false },
+    maintenance: { enabled: false, until: null }
   });
   const prevIsMovingRef = useRef(false); // NEW: Ref to track previous moving state (add this line if missing)
 
@@ -258,6 +259,17 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
           targetLevel={status.targetLevel || null} 
           position={position}
         />
+      )}
+      {settingsState.maintenance && settingsState.maintenance.enabled && (
+        <div className='banner maintenance-banner' style={{ background: '#f90', color: '#000', fontWeight: 'bold', textAlign: 'center', padding: '0.4em' }}>
+          MAINTENANCE MODE - door alerts ignored, manual moves only
+          {settingsState.maintenance.until ? ` (until ${new Date(settingsState.maintenance.until).toLocaleTimeString()})` : ''}
+        </div>
+      )}
+      {status.fault && (
+        <div className='banner fault-banner' style={{ background: '#d00', color: '#fff', fontWeight: 'bold', textAlign: 'center', padding: '0.4em' }}>
+          FAULT: {status.fault.reason} - floor calls blocked until the board is back
+        </div>
       )}
       <div className='nav-wrapper'>
         <button className='stop-btn' onClick={stopLift}>
