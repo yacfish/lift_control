@@ -233,6 +233,11 @@ function LiftControl({ setIsAuthenticated, authDisabled }) {
             FAULT: {status.fault.reason} - floor calls blocked until the board is back
           </div>
         )}
+        {status.boardAlerts && status.boardAlerts.length > 0 && (
+          <div className='banner fault-banner'>
+            ALERT: level {status.boardAlerts.map(a => a.level).join(', ')} board not responding - reconnecting
+          </div>
+        )}
       </div>
       <div className="menu-bar"> {/* Added back menu-bar */}
         <h1>LIFT CONTROL</h1>
