@@ -62,14 +62,14 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Lift mock 
 <style>body{font-family:sans-serif;margin:20px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 10px}
 .on{background:#cfc}.off{background:#fcc}button{margin:2px}#lift{margin:10px 0;font-weight:bold}#err{color:#c00}
 #strip{height:14px;width:420px;border-radius:7px;margin:8px 0;background:#333;transition:all .3s}#strip.lit{background:linear-gradient(90deg,#fff6c0,#ffe066,#fff6c0);box-shadow:0 0 18px 6px #ffd84d}</style></head>
-<body><h2>Lift mock panel</h2><div id="mode" style="color:#c60;font-weight:bold"></div><div id="lift"></div><div>LED strip: <span id="lightTxt"></span></div><div id="strip"></div><div id="err"></div>
+<body><h2>Lift mock panel</h2><div id="mode" style="color:#c60;font-weight:bold"></div><div id="lift"></div><div>LED strip: <span id="lightTxt"></span></div><div id="strip"></div><div>Overshoot after stop: <span id="overshoot"></span> <button onclick="act('_','overshoot')">Change overshoot</button></div><div id="err"></div>
 <table><thead><tr><th>Level</th><th>Lift</th><th>Door</th><th>Lock</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table>
 <script>
 async function act(l,a){const r=await fetch('/action/'+l+'/'+a,{method:'POST'});const j=await r.json();document.getElementById('err').textContent=j.error||'';refresh();}
 async function refresh(){try{const s=await (await fetch('/state')).json();
 document.getElementById('mode').textContent=(s.fault?'FAULT: '+s.fault.reason+' ':'')+(s.maintenance&&s.maintenance.enabled?'MAINTENANCE MODE until '+new Date(s.maintenance.until).toLocaleTimeString():'');
 document.getElementById('lift').textContent='Lift: '+s.liftState+' | position '+s.currentPosition+' | target '+s.targetLevel+' | '+s.displayMessage;
-document.getElementById('strip').className=s.light?'lit':'';document.getElementById('lightTxt').textContent=s.light?'ON':'OFF';
+document.getElementById('overshoot').textContent=s.overshoot||'';document.getElementById('strip').className=s.light?'lit':'';document.getElementById('lightTxt').textContent=s.light?'ON':'OFF';
 document.getElementById('rows').innerHTML=s.levels.slice().reverse().map(l=>'<tr><td>'+l.level+'</td>'+
 '<td class="'+(l.liftHere?'on':'')+'">'+(l.liftHere?'HERE':'away')+(l.silent?' <b>(SILENT)</b>':'')+'</td>'+
 '<td class="'+(l.doorClosed?'on':'off')+'">'+(l.doorClosed?'closed':'OPEN')+'</td>'+
@@ -80,11 +80,16 @@ document.getElementById('rows').innerHTML=s.levels.slice().reverse().map(l=>'<tr
 setInterval(refresh,500);refresh();
 </script></body></html>`;
 
-// getStatus() returns { light (0/1), liftState, currentPosition, targetLevel, displayMessage, presence: {level: bool} }
-function startMockPanel(port, boards, getStatus) {
+// getStatus() returns { light (0/1), liftState, currentPosition, targetLevel, displayMessage, overshoot, presence: {level: bool} }
+// onAction(act) handles panel-wide actions (level '_'), returns an error string or null
+function startMockPanel(port, boards, getStatus, onAction = () => 'unknown action') {
   http.createServer((req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
     const m = req.url.match(/^\/action\/([^/]+)\/([a-z]+)$/);
+    if (req.method === 'POST' && m && m[1] === '_') {
+      const err = onAction(m[2]);
+      return json(err ? 409 : 200, err ? { error: err } : { ok: true });
+    }
     if (req.method === 'POST' && m) {
       const b = boards[decodeURIComponent(m[1])];
       if (!b) return json(404, { error: 'unknown level' });
