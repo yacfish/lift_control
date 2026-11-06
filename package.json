@@ -3,7 +3,8 @@
   "version": "2.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --check server.js && node --check mock_panel.js && node test/merge-pr5-pr7.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
