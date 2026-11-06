@@ -8,7 +8,7 @@ function createMockBoard(level, feed) {
   // A silenced board keeps its port open but sends nothing (like the B board in the 2026-10-31 incident)
   const send = mess => setImmediate(() => { if (!b.silent) feed(`${level} : ${mess}`); });
   send('<3');
-  setInterval(() => send('<3'), 5000); // firmware HEARTBEAT_INTERVAL
+  setInterval(() => send('<3'), 1000); // firmware HEARTBEAT_INTERVAL
   const lockIfRequestedAndClosed = () => {
     if (b.lockRequested && b.doorClosed) {
       b.doorLocked = true;

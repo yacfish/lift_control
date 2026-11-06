@@ -1,6 +1,6 @@
 .App {
   text-align: center;
-  height: 100dvh;
+  min-height: 100dvh; /* grow with the page so tall settings panels scroll instead of hiding under the bottom bar */
   display: flex;
   flex-direction: column;
   justify-content: center;

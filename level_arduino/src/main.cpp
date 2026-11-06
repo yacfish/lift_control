@@ -33,7 +33,7 @@ bool call_button_pressed = false;
 bool calibrartion_status = false;
 
 unsigned long lastHeartbeat = 0;
-const unsigned long HEARTBEAT_INTERVAL = 500; // Heartbeat every 0.5 s so the server can detect a silent board within ~2 s (BOARD_SILENT_MS=2000)
+const unsigned long HEARTBEAT_INTERVAL = 1000; // "<id> : <3" every 1 s, non-blocking (millis). Server alerts after 3 s of silence (BOARD_SILENT_MS=3000)
 
 ////////////////////////////////////////////////////////////////////
 // CUSTOM FUNCTIONS
@@ -148,9 +148,10 @@ void loop() {
   delay(1);
 
   // Send heartbeat periodically
-  if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL) {
+  if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
     sendHeartbeat();
-    lastHeartbeat = millis();
+    lastHeartbeat += HEARTBEAT_INTERVAL; // fixed 1 s cadence, no drift (unsigned math is rollover safe)
+    if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) lastHeartbeat = millis(); // fell far behind (long blocking call): resync, no burst
   }
 
   if (Serial.available() > 0) {

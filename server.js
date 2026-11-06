@@ -33,10 +33,11 @@ const parseSegments = (str, def) => { const a = String(str || '').split(',').map
 const SEGMENT_TIMES_UP = parseSegments(process.env.SEGMENT_TIMES_UP, [18, 18, 17]);   // B->G, G->1, 1->2
 const SEGMENT_TIMES_DOWN = parseSegments(process.env.SEGMENT_TIMES_DOWN, [17, 18, 17]); // G->B, 1->G, 2->1
 const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 3; // hard travel limit = expected time + margin
-// A board is "silent" when no line came from it for this long. Firmware heartbeat is 5 s today, so keep > 5 s until it is lowered
-const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 6000;
+// A board is "silent" when no line came from it for this long. Firmware sends "<id> : <3" every 1 s.
+// Boards still on the old 5 s heartbeat firmware get LEGACY_BOARD_SILENT_MS instead (see boardSilentMs)
+const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 3000;
 const FAULT_CLEAR_MS = Number(process.env.FAULT_CLEAR_MS) || 10000; // silent board must be healthy this long before trips are allowed again
-const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 15;
+const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 10;
 const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
 const REVERSAL_DEAD_TIME_MS = Number(process.env.REVERSAL_DEAD_TIME_MS) || 300; // pause before reversing direction
 const DOOR_ALERT_MS = Number(process.env.DOOR_ALERT_MS) || 10000; // how long a door problem stays on the display
@@ -62,7 +63,7 @@ const settings = {
   light: { auto: true, timeout: 60, currentState: false },
   callButton: { enabled: true },
   manual: { upEnabled: false, downEnabled: false },
-  maintenance: { enabled: false, until: null } // door alerts / lock checks ignored, manual moves only
+  maintenance: { enabled: false, until: null } // "Ignore sensors": door alerts / lock checks ignored, floor detection and stops unchanged
 };
 
 class GpioRelayGroup {
@@ -277,6 +278,29 @@ function currentPositionM(targetM) {
   return levelPositions[currentPosition];
 }
 
+// Gap label when the lift leaves levelLabel going up (dir 1) or down (dir 0), e.g. 'B - G'.
+// Built from the level that lost the line, never from currentLevel (unknown right after a restart)
+function gapFrom(levelLabel, dir) {
+  const i = listOfLevels.indexOf(levelLabel);
+  const next = listOfLevels[dir ? i + 1 : i - 1];
+  if (i < 0 || !next) return levelLabel; // end of the shaft: stay at the end level
+  return dir ? `${levelLabel} - ${next}` : `${next} - ${levelLabel}`;
+}
+
+// Start point (meters) for a floor trip's travel limit, worst case so the limit is never too short.
+// At a level: that level. Otherwise (between floors after a manual move or an overshoot): the farthest of the
+// gap ends and the last confirmed level and its neighbours (the lift is never more than one gap away from it).
+// Nothing known: the end of the shaft farthest from the target (full shaft time).
+function tripStartM(targetM) {
+  if (levelPositions.hasOwnProperty(currentPosition)) return levelPositions[currentPosition];
+  const cands = [];
+  if (currentPosition.includes(' - ')) currentPosition.split(' - ').forEach(l => { if (levelPositions.hasOwnProperty(l)) cands.push(l); });
+  const i = listOfLevels.indexOf(currentLevel);
+  if (i >= 0) [i - 1, i, i + 1].forEach(k => { if (listOfLevels[k]) cands.push(listOfLevels[k]); });
+  if (!cands.length) cands.push(listOfLevels[0], listOfLevels[listOfLevels.length - 1]);
+  return cands.map(l => levelPositions[l]).reduce((best, m) => (expectedTravelMs(m, targetM) > expectedTravelMs(best, targetM) ? m : best));
+}
+
 // Safety cutoff: stop the motor if the move takes longer than expected (ms = expected travel time)
 function startTravelTimeout(expectedMs) {
   clearTravelTimeout();
@@ -300,9 +324,23 @@ const levelLastData = {}; // level -> time of last line received from its board
 let trip = null;  // active /floor trip: { seq, dir, fromM, startTime, expectedMs, mode: 'normal' | 'stopByTime' | 'allSilent' }
 let fault = null; // { levels: [...], reason, since, backSince } blocks new trips until those boards are healthy again
 
+// ---- Board silence alert (heartbeat): catches a board that froze while its USB link stays up ----
+const LEGACY_BOARD_SILENT_MS = 6000;     // board never seen beating faster than every 2 s = old 5 s heartbeat firmware
+const BOARD_RECONNECT_EVERY_MS = 30000;  // at most one reconnect attempt per silent board per 30 s
+const boardAlerts = {}; // level -> { since, lastReconnect, deferLogged }, one per silence episode
+const lastBeat = {}, fastBeat = {};
+function noteHeartbeat(l) {
+  const now = Date.now();
+  if (lastBeat[l] && now - lastBeat[l] < 2000) fastBeat[l] = true;
+  lastBeat[l] = now;
+}
+function boardSilentMs(l) {
+  return fastBeat[l] ? BOARD_SILENT_MS : Math.max(BOARD_SILENT_MS, LEGACY_BOARD_SILENT_MS);
+}
+
 function boardAlive(l) {
   const lp = levelPack[l];
-  return !!(lp && lp.port && lp.port.isOpen && Date.now() - (levelLastData[l] || 0) < BOARD_SILENT_MS);
+  return !!(lp && lp.port && lp.port.isOpen && Date.now() - (levelLastData[l] || 0) < boardSilentMs(l));
 }
 
 function enterFault(levels, reason) {
@@ -358,6 +396,42 @@ setInterval(() => {
     }
   } else fault.backSince = null;
 }, 1000);
+
+// Alert only: never stops, cuts relays or changes a move. Raised once per silence episode, cleared when the board talks again.
+// Reconnect = close the port, the port scan reopens it (reopening also resets the Nano). Only while the lift is idle
+setInterval(() => {
+  const now = Date.now();
+  listOfLevels.forEach(l => {
+    if (!levelLastData[l]) return; // never heard from since start: nothing to compare with
+    let a = boardAlerts[l];
+    if (now - levelLastData[l] <= boardSilentMs(l)) {
+      if (a) {
+        console.log(newDateStr(), `BOARD ${l} back after ${Math.round((now - a.since) / 1000)}s silent, alert cleared`);
+        delete boardAlerts[l];
+      }
+      return;
+    }
+    if (!a) {
+      a = boardAlerts[l] = { since: levelLastData[l], lastReconnect: 0, deferLogged: false };
+      console.error(newDateStr(), `ALERT: board ${l} silent for ${Math.round((now - a.since) / 1000)}s (no heartbeat)${isMoveActive() ? ', move in progress continues' : ''}`);
+    }
+    if (mockLiftMode || now - a.lastReconnect < BOARD_RECONNECT_EVERY_MS) return;
+    if (isMoveActive()) {
+      if (!a.deferLogged) console.warn(newDateStr(), `board ${l} silent: reconnect deferred until the lift is idle`);
+      a.deferLogged = true;
+      return;
+    }
+    const index = levelPack[l] ? ports.indexOf(levelPack[l].port) : -1;
+    if (index < 0 || !ports[index].isOpen) return; // link already down: the port scan reopens it
+    a.lastReconnect = now;
+    a.deferLogged = false;
+    console.error(newDateStr(), `board ${l} silent: closing ${portPaths[index]} so the port scan reopens it`);
+    if (retryTimeouts[index]) { clearTimeout(retryTimeouts[index]); retryTimeouts[index] = null; }
+    const p = ports[index];
+    p.silenceReconnect = true; // close handler must not stop a move that started meanwhile
+    p.close(err => { if (err) { p.destroy(); p.emit('close'); } });
+  });
+}, 500);
 
 // Maintenance mode: door-open alerts and door-lock checks ignored, only manual moves, auto-expires
 let maintenanceTimeoutId = null;
@@ -529,16 +603,9 @@ function parseLevelData(data, port=null) {
       levelPack[levelLabel].state.presence = null;
       console.log(newDateStr(),`PRESENCE SENSOR TRIGGERED > Lift left level ${levelLabel}`);
       if (isMotorOn()) lastLineLost = { level: levelLabel, time: Date.now() };
-      if (relayUp.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(levelLabel) + 1
-        const nextLevel = listOfLevels[nextLevelIdx]
-        currentPosition = `${currentLevel} - ${nextLevel}`
-      }
-      else if (relayDown.readSync()) {
-        const nextLevelIdx = listOfLevels.indexOf(levelLabel) - 1
-        const nextLevel = listOfLevels[nextLevelIdx]
-        currentPosition = `${nextLevel} - ${currentLevel}`
-      }
+      // Gap comes from the floor that lost the line (currentLevel is unknown right after a restart).
+      if (relayUp.readSync()) currentPosition = gapFrom(levelLabel, 1);
+      else if (relayDown.readSync()) currentPosition = gapFrom(levelLabel, 0);
       else if (levelLabel === currentPosition) { // a line-lost from a floor the lift is not at means nothing
         console.log(newDateStr(),`LIFT OVERSHOT @ level ${levelLabel} while going ${lastDir?"UP":"DOWN"}`);
         liftOverShot = {levelLabel,lastDir}
@@ -583,7 +650,7 @@ function parseLevelData(data, port=null) {
         }
       }
     } else if (message === '<3') {
-      // Silent: No log to avoid flooding
+      noteHeartbeat(levelLabel); // heartbeat: liveness only, never a sensor event. No log to avoid flooding
     } else {
       console.log(newDateStr(), `Unknown message from ${levelLabel}: ${message}`);
     }
@@ -610,6 +677,8 @@ function parseLevelData(data, port=null) {
       console.log(newDateStr(),'port', port.settings.path,"identified as level", parts[0])
       const here = parts[2]=='LIFT HERE'
       if (here) {
+        // currentLevel too: it is the last confirmed level, including right after a restart.
+        // A board reporting LIFT HERE always wins over the saved file.
         currentPosition = parts[0]
         currentLevel = parts[0]
         liftOverShot = null
@@ -745,26 +814,39 @@ function openSerialPort(path, index, isInitial = false) {
           console.log(newDateStr(), `Mock overshoot: ${mockOvershoot.m ? mockOvershoot.m + ' m after ' + mockOvershoot.delayMs + ' ms' : 'off'}`);
           return null;
         });
-        // Start where the last mock run left the lift (last_position.mock.json), G otherwise
+        // Drop anything loaded from last_position.json before mock mode was known, then restore the mock file.
+        // A saved floor wins. Otherwise MOCK_START_LEVEL (default G).
         currentLevel = 'none';
         currentPosition = 'none';
         liftOverShot = null;
         savedPosition = null;
         const saved = loadPosition();
-        const startFloor = saved ? saved.floor : 'G';
+        const envStart = listOfLevels.includes(process.env.MOCK_START_LEVEL) ? process.env.MOCK_START_LEVEL : 'G';
+        const startFloor = saved ? saved.floor : envStart;
         currentLevel = startFloor;
         currentPosition = startFloor;
         virtualLiftPosition = levelPositions[startFloor];
-        const coasted = saved && (saved.viaOvershoot || saved.overshotDir === 0 || saved.overshotDir === 1);
+        const coasted = !!(saved && (saved.viaOvershoot || saved.overshotDir === 0 || saved.overshotDir === 1));
         if (coasted) {
-          // it had coasted past the line: the virtual sensor reads LIFT AWAY, as on the real lift.
-          // Seed the virtual reading so that startup line-lost is not taken as a new event
+          // Coasted past the line: the virtual sensor reads LIFT AWAY, as on the real lift.
           const dir = saved.overshotDir === 0 ? 0 : 1;
           virtualLiftPosition += (dir === 1 ? 1 : -1) * (mockOvershoot.m || 0.1);
-          mockLevelObject[startFloor] = `${startFloor} : LIFT AWAY`;
         }
-        if (!coasted || saved.viaOvershoot) levelPack[startFloor].state.presence = 'LIFT HERE';
-        updateMockLevelData();
+        // Boot like the real boards: each one reports initial lift_sensor once. Seed mockLevelObject first so
+        // this startup report is not followed by a second, live line-lost from the position scan.
+        listOfLevels.forEach(level => {
+          const sensorHere = level === startFloor && !coasted;
+          const here = sensorHere ? 'LIFT HERE' : 'LIFT AWAY';
+          mockLevelObject[level] = `${level} : ${here}`;
+          parseLevelData(`${level} : initial lift_sensor (7) : ${here}`, mockBoards[level].port);
+        });
+        if (saved && saved.viaOvershoot) {
+          // Ignored overshoot: the sensor is away, but the lift is still at this floor.
+          currentLevel = startFloor;
+          currentPosition = startFloor;
+          liftOverShot = null;
+          if (levelPack[startFloor]) levelPack[startFloor].state.presence = 'LIFT HERE';
+        }
       }
     } else if (runtimeErrorCount >= 2) { // Threshold for runtime errors to trigger mock if persists
       console.warn(newDateStr(), 'High runtime errors; consider mock mode if persists');
@@ -778,7 +860,7 @@ function openSerialPort(path, index, isInitial = false) {
     console.error(`${dateTimeStr} Serial port closed for ${path} (backoff will be ${retryBackoffs[index]/1000}s)`);
     // During a /floor trip keep going: the trip guard diverts to the next live floor or stops by time
     if (trip && trip.seq === moveSeq && isMotorOn()) console.error(newDateStr(), `Serial link lost (${path}) during trip, trip guard takes over`);
-    else if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
+    else if (isMoveActive() && !port.silenceReconnect) stopMotion(`Serial link lost (${path}), lift stopped`);
     // Drop level mappings on this port so the level can be picked up again on whatever port it reappears
     Object.keys(levelPack).forEach(l => {
       if (levelPack[l].port === port) {
@@ -819,7 +901,7 @@ portPaths.forEach((path, index) => {
 setInterval(() => {
   if (mockLiftMode) return; // Skip in mock mode
   portPaths.forEach((path, index) => {
-    if (ports[index] && ports[index].isOpen && Date.now() - lastDataTimes[index] > 20000) { // 20s threshold
+    if (ports[index] && ports[index].isOpen && !isMoveActive() && Date.now() - lastDataTimes[index] > 20000) { // 20s threshold, only while idle: a silent board never stops a move
       console.error(newDateStr(), `Stale heartbeat for ${path} (>20s), forcing reconnect`);
       runtimeErrorCount++; // Count as runtime error
       if (ports[index] && ports[index].isOpen) {
@@ -1097,6 +1179,7 @@ app.get('/status', verifyToken, (req, res) => {
       settings,
       fault: fault ? { levels: fault.levels, reason: fault.reason, since: fault.since } : null,
       boards: Object.fromEntries(listOfLevels.map(l => [l, boardAlive(l)])),
+      boardAlerts: Object.keys(boardAlerts).map(level => ({ level, since: boardAlerts[level].since })),
       doorStatuses: {
         allOpen: Object.values(levelPack).every(l => !l.state.doorLocked),
         allLocked: Object.values(levelPack).every(l => l.state.doorLocked)
@@ -1170,16 +1253,7 @@ function goToFloor(newTargetLevel){
   }, 2000);
   console.log(newDateStr(),`Lift target level updated to: ${targetLevel}`);
   if (liftOverShot){
-    if (liftOverShot.lastDir) {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) + 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${currentLevel} - ${nextLevel}`
-    }
-    else {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) - 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${nextLevel} - ${currentLevel}`
-    }
+    currentPosition = gapFrom(liftOverShot.levelLabel, liftOverShot.lastDir ? 1 : 0);
     liftOverShot=null
   }
   if (currentPosition != targetLevel) {
@@ -1187,15 +1261,25 @@ function goToFloor(newTargetLevel){
     if (currentPosition.includes('-'))
       numPosition = levelPositions[currentPosition.split(' - ')[0]] + 1.5;
     else numPosition = levelPositions[currentPosition];
+    if (!isFinite(numPosition)) numPosition = levelPositions[currentLevel]; // malformed position: last confirmed level
+    if (!isFinite(numPosition)) {
+      console.warn(newDateStr(), `Trip to ${targetLevel} refused: position unknown (${currentPosition})`);
+      displayMessage = 'Position unknown, move manually to a floor first';
+      targetLevel = null;
+      return false;
+    }
     // console.log('numPosition : ', numPosition);
     const heightDiff = levelPositions[targetLevel] - numPosition;
     const desiredDirection = heightDiff > 0 ? 1 : 0; // 1 = up , 0 = down
 
     // Safely switch relays: turn off both first to avoid overlap
     clearTravelTimeout();
+    trip = null; // nothing left over from an earlier move
     relayUp.writeSync(0);
     relayDown.writeSync(0);
     manual = false;
+    settings.manual.upEnabled = false;
+    settings.manual.downEnabled = false;
     liftState = 'Locking doors';
     const seq = ++moveSeq;
     noteMoveStart();
@@ -1216,7 +1300,9 @@ function goToFloor(newTargetLevel){
       relayUp.writeSync(desiredDirection);
       relayDown.writeSync(1 - desiredDirection);
       liftState = desiredDirection ? 'Going UP' : 'Going DOWN';
-      trip = { seq, dir: desiredDirection, fromM: currentPositionM(levelPositions[targetLevel]), startTime: Date.now(), expectedMs: expectedTravelMs(currentPositionM(levelPositions[targetLevel]), levelPositions[targetLevel]), mode: 'normal' };
+      const fromM = tripStartM(levelPositions[targetLevel]);
+      trip = { seq, dir: desiredDirection, fromM, startTime: Date.now(), expectedMs: expectedTravelMs(fromM, levelPositions[targetLevel]), mode: 'normal' };
+      console.log(newDateStr(), `Trip ${currentPosition} -> ${targetLevel}: travel limit ${Math.round((trip.expectedMs + TRAVEL_MARGIN_S * 1000) / 1000)}s`);
       if (settings.light.auto) setLight(1);
     }, abortMove);
   } else targetLevel = null;
@@ -1224,7 +1310,6 @@ function goToFloor(newTargetLevel){
 }
 
 function tripBlockedReason() {
-  if (settings.maintenance.enabled) return 'Maintenance mode: manual moves only';
   if (fault) return `Fault: level ${fault.levels.join(', ')} not responding, trips blocked`;
   return null;
 }
@@ -1235,6 +1320,9 @@ app.post('/floor', verifyToken, (req, res) => {
     const blocked = tripBlockedReason();
     if (blocked) {
       console.log(newDateStr(), `Floor request ${level} refused: ${blocked}`);
+      displayMessage = blocked; // show the reason next to STOP, not only in the HTTP error
+      clearTimeout(clearDisplayMessageTimeout);
+      clearDisplayMessageTimeout = setTimeout(() => { displayMessage = liftState; }, 5000);
       res.status(423).json({ error: blocked });
     } else if (liftState === 'Idle') {
       goToFloor(level)
@@ -1288,16 +1376,7 @@ app.post('/stop', verifyToken, (req, res) => {
 
 function manualControl(direction, state) {
   if (liftOverShot){
-    if (liftOverShot.lastDir) {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) + 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${currentLevel} - ${nextLevel}`
-    }
-    else {
-      const nextLevelIdx = listOfLevels.indexOf(liftOverShot.levelLabel) - 1
-      const nextLevel = listOfLevels[nextLevelIdx]
-      currentPosition = `${nextLevel} - ${currentLevel}`
-    }
+    currentPosition = gapFrom(liftOverShot.levelLabel, liftOverShot.lastDir ? 1 : 0);
     liftOverShot=null
   }
 
@@ -1326,6 +1405,7 @@ function manualControl(direction, state) {
       const seq = ++moveSeq;
       noteMoveStart();
       clearTravelTimeout();
+      trip = null; // a manual move never runs under, or leaves behind, a floor trip's travel limit
       relayUp.writeSync(0);
       relayDown.writeSync(0);
       if (mockLiftMode) mockLiftUpdate(false);
@@ -1353,7 +1433,8 @@ function manualControl(direction, state) {
     } else {
       moveSeq++;
       clearTravelTimeout();
-      noteStop();
+      noteStop(); // before the relays drop, so a line lost under 500 ms ago still counts
+      trip = null;
       if (mockLiftMode) {
         mockLiftUpdate(false, direction === 'up' ? 1 : 0);
         console.log(newDateStr(), `Controlling virtual lift (mock mode): direction=${direction}, state=false`);
