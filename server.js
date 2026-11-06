@@ -33,8 +33,9 @@ const parseSegments = (str, def) => { const a = String(str || '').split(',').map
 const SEGMENT_TIMES_UP = parseSegments(process.env.SEGMENT_TIMES_UP, [18, 18, 17]);   // B->G, G->1, 1->2
 const SEGMENT_TIMES_DOWN = parseSegments(process.env.SEGMENT_TIMES_DOWN, [17, 18, 17]); // G->B, 1->G, 2->1
 const TRAVEL_MARGIN_S = Number(process.env.TRAVEL_MARGIN_S) || 3; // hard travel limit = expected time + margin
-// A board is "silent" when no line came from it for this long. Firmware heartbeat is 5 s today, so keep > 5 s until it is lowered
-const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 6000;
+// A board is "silent" when no line came from it for this long. Firmware sends "<id> : <3" every 1 s.
+// Boards still on the old 5 s heartbeat firmware get LEGACY_BOARD_SILENT_MS instead (see boardSilentMs)
+const BOARD_SILENT_MS = Number(process.env.BOARD_SILENT_MS) || 3000;
 const FAULT_CLEAR_MS = Number(process.env.FAULT_CLEAR_MS) || 10000; // silent board must be healthy this long before trips are allowed again
 const MAINTENANCE_MINUTES = Number(process.env.MAINTENANCE_MINUTES) || 10;
 const DOOR_LOCK_TIMEOUT_MS = Number(process.env.DOOR_LOCK_TIMEOUT_MS) || 3000; // wait for DOOR LOCKED from all levels
@@ -236,9 +237,23 @@ const levelLastData = {}; // level -> time of last line received from its board
 let trip = null;  // active /floor trip: { seq, dir, fromM, startTime, expectedMs, mode: 'normal' | 'stopByTime' | 'allSilent' }
 let fault = null; // { levels: [...], reason, since, backSince } blocks new trips until those boards are healthy again
 
+// ---- Board silence alert (heartbeat): catches a board that froze while its USB link stays up ----
+const LEGACY_BOARD_SILENT_MS = 6000;     // board never seen beating faster than every 2 s = old 5 s heartbeat firmware
+const BOARD_RECONNECT_EVERY_MS = 30000;  // at most one reconnect attempt per silent board per 30 s
+const boardAlerts = {}; // level -> { since, lastReconnect, deferLogged }, one per silence episode
+const lastBeat = {}, fastBeat = {};
+function noteHeartbeat(l) {
+  const now = Date.now();
+  if (lastBeat[l] && now - lastBeat[l] < 2000) fastBeat[l] = true;
+  lastBeat[l] = now;
+}
+function boardSilentMs(l) {
+  return fastBeat[l] ? BOARD_SILENT_MS : Math.max(BOARD_SILENT_MS, LEGACY_BOARD_SILENT_MS);
+}
+
 function boardAlive(l) {
   const lp = levelPack[l];
-  return !!(lp && lp.port && lp.port.isOpen && Date.now() - (levelLastData[l] || 0) < BOARD_SILENT_MS);
+  return !!(lp && lp.port && lp.port.isOpen && Date.now() - (levelLastData[l] || 0) < boardSilentMs(l));
 }
 
 function enterFault(levels, reason) {
@@ -294,6 +309,42 @@ setInterval(() => {
     }
   } else fault.backSince = null;
 }, 1000);
+
+// Alert only: never stops, cuts relays or changes a move. Raised once per silence episode, cleared when the board talks again.
+// Reconnect = close the port, the port scan reopens it (reopening also resets the Nano). Only while the lift is idle
+setInterval(() => {
+  const now = Date.now();
+  listOfLevels.forEach(l => {
+    if (!levelLastData[l]) return; // never heard from since start: nothing to compare with
+    let a = boardAlerts[l];
+    if (now - levelLastData[l] <= boardSilentMs(l)) {
+      if (a) {
+        console.log(newDateStr(), `BOARD ${l} back after ${Math.round((now - a.since) / 1000)}s silent, alert cleared`);
+        delete boardAlerts[l];
+      }
+      return;
+    }
+    if (!a) {
+      a = boardAlerts[l] = { since: levelLastData[l], lastReconnect: 0, deferLogged: false };
+      console.error(newDateStr(), `ALERT: board ${l} silent for ${Math.round((now - a.since) / 1000)}s (no heartbeat)${isMoveActive() ? ', move in progress continues' : ''}`);
+    }
+    if (mockLiftMode || now - a.lastReconnect < BOARD_RECONNECT_EVERY_MS) return;
+    if (isMoveActive()) {
+      if (!a.deferLogged) console.warn(newDateStr(), `board ${l} silent: reconnect deferred until the lift is idle`);
+      a.deferLogged = true;
+      return;
+    }
+    const index = levelPack[l] ? ports.indexOf(levelPack[l].port) : -1;
+    if (index < 0 || !ports[index].isOpen) return; // link already down: the port scan reopens it
+    a.lastReconnect = now;
+    a.deferLogged = false;
+    console.error(newDateStr(), `board ${l} silent: closing ${portPaths[index]} so the port scan reopens it`);
+    if (retryTimeouts[index]) { clearTimeout(retryTimeouts[index]); retryTimeouts[index] = null; }
+    const p = ports[index];
+    p.silenceReconnect = true; // close handler must not stop a move that started meanwhile
+    p.close(err => { if (err) { p.destroy(); p.emit('close'); } });
+  });
+}, 500);
 
 // Maintenance mode: door-open alerts and door-lock checks ignored, only manual moves, auto-expires
 let maintenanceTimeoutId = null;
@@ -481,7 +532,7 @@ function parseLevelData(data, port=null) {
         }
       }
     } else if (message === '<3') {
-      // Silent: No log to avoid flooding
+      noteHeartbeat(levelLabel); // heartbeat: liveness only, never a sensor event. No log to avoid flooding
     } else {
       console.log(newDateStr(), `Unknown message from ${levelLabel}: ${message}`);
     }
@@ -651,7 +702,7 @@ function openSerialPort(path, index, isInitial = false) {
     console.error(`${dateTimeStr} Serial port closed for ${path} (backoff will be ${retryBackoffs[index]/1000}s)`);
     // During a /floor trip keep going: the trip guard diverts to the next live floor or stops by time
     if (trip && trip.seq === moveSeq && isMotorOn()) console.error(newDateStr(), `Serial link lost (${path}) during trip, trip guard takes over`);
-    else if (isMoveActive()) stopMotion(`Serial link lost (${path}), lift stopped`);
+    else if (isMoveActive() && !port.silenceReconnect) stopMotion(`Serial link lost (${path}), lift stopped`);
     // Drop level mappings on this port so the level can be picked up again on whatever port it reappears
     Object.keys(levelPack).forEach(l => {
       if (levelPack[l].port === port) {
@@ -690,7 +741,7 @@ portPaths.forEach((path, index) => {
 setInterval(() => {
   if (mockLiftMode) return; // Skip in mock mode
   portPaths.forEach((path, index) => {
-    if (ports[index] && ports[index].isOpen && Date.now() - lastDataTimes[index] > 20000) { // 20s threshold
+    if (ports[index] && ports[index].isOpen && !isMoveActive() && Date.now() - lastDataTimes[index] > 20000) { // 20s threshold, only while idle: a silent board never stops a move
       console.error(newDateStr(), `Stale heartbeat for ${path} (>20s), forcing reconnect`);
       runtimeErrorCount++; // Count as runtime error
       if (ports[index] && ports[index].isOpen) {
@@ -968,6 +1019,7 @@ app.get('/status', verifyToken, (req, res) => {
       settings,
       fault: fault ? { levels: fault.levels, reason: fault.reason, since: fault.since } : null,
       boards: Object.fromEntries(listOfLevels.map(l => [l, boardAlive(l)])),
+      boardAlerts: Object.keys(boardAlerts).map(level => ({ level, since: boardAlerts[level].since })),
       doorStatuses: {
         allOpen: Object.values(levelPack).every(l => !l.state.doorLocked),
         allLocked: Object.values(levelPack).every(l => l.state.doorLocked)
